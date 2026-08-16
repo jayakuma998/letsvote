@@ -22,7 +22,7 @@ final class Cognito
     private const JWKS_CACHE_TTL = 86400; // 24 hours
     private const CLOCK_SKEW = 60;        // seconds of tolerance on exp/iat
 
-    /** e.g. https://cognito-idp.us-east-1.amazonaws.com/us-east-1_AbC123 */
+    /** e.g. https://cognito-idp.us-east-2.amazonaws.com/us-east-2_AbC123 */
     public static function issuer(): string
     {
         return sprintf(
@@ -32,7 +32,7 @@ final class Cognito
         );
     }
 
-    /** e.g. https://letsvote-auth.auth.us-east-1.amazoncognito.com */
+    /** e.g. https://letsvote-auth.auth.us-east-2.amazoncognito.com */
     private static function hostedUiBase(): string
     {
         return 'https://' . rtrim(Config::mustGet('cognito.domain'), '/');

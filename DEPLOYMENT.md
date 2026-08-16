@@ -3,7 +3,16 @@
 Every step is done **by hand in the AWS console**, in this order. The order
 matters: each step produces an ID the next step needs.
 
-Region for the whole build: **us-east-1**.
+Region for the whole build: **us-east-2** (Ohio).
+
+> **Two things stay in us-east-1 no matter which Region you build in**, because
+> AWS pins them there:
+> - the **CloudFront viewer certificate** in ACM ([step 8](#8-acm-certificate)) —
+>   CloudFront accepts custom certificates only from us-east-1
+> - the **WAF web ACL** scoped to CloudFront ([step 17](#17-waf))
+>
+> This is why [step 8](#8-acm-certificate) asks for **two** certificates. In a
+> single-Region us-east-1 build one certificate would cover both.
 
 > **This copy is filled in for a specific build:** domain `letsvotes.com`,
 > AWS account `860977520909`, application repository
@@ -59,7 +68,7 @@ in step 8 depends on it — and confirm the ICANN verification email, or the
 registrar suspends the domain 15 days later. `.click` / `.link` / `.info` cost
 a few dollars a year.
 
-**Cost.** This is not free tier. Rough us-east-1 monthly estimate:
+**Cost.** This is not free tier. Rough us-east-2 monthly estimate:
 
 | Item | ~USD / month |
 |---|---|
@@ -101,12 +110,12 @@ Create six subnets (VPC → Subnets → *Create subnet*):
 
 | Name | AZ | CIDR | Purpose |
 |---|---|---|---|
-| `public-subnet-01` | us-east-1a | `172.16.0.0/24` | ALB |
-| `public-subnet-02` | us-east-1b | `172.16.1.0/24` | ALB + NAT gateway |
-| `webapp-subnet-01` | us-east-1a | `172.16.2.0/24` | EC2 |
-| `webapp-subnet-02` | us-east-1b | `172.16.3.0/24` | EC2 |
-| `database-subnet-01` | us-east-1a | `172.16.4.0/24` | RDS primary |
-| `database-subnet-02` | us-east-1b | `172.16.5.0/24` | RDS read replica |
+| `public-subnet-01` | us-east-2a | `172.16.0.0/24` | ALB |
+| `public-subnet-02` | us-east-2b | `172.16.1.0/24` | ALB + NAT gateway |
+| `webapp-subnet-01` | us-east-2a | `172.16.2.0/24` | EC2 |
+| `webapp-subnet-02` | us-east-2b | `172.16.3.0/24` | EC2 |
+| `database-subnet-01` | us-east-2a | `172.16.4.0/24` | RDS primary |
+| `database-subnet-02` | us-east-2b | `172.16.5.0/24` | RDS read replica |
 
 For both **public** subnets only: *Actions* → *Edit subnet settings* → tick
 **Enable auto-assign public IPv4 address**. Leave the other four off.
@@ -164,8 +173,13 @@ instance directly to forge it.
 
 ## 4. Secrets Manager
 
-Secrets Manager → *Store a new secret* → **Other type of secret** →
-*Plaintext*. Paste this and fill in the `TBD`s in steps 5 and 6.
+Secrets Manager, **in us-east-2** — a secret is a regional resource, and
+`deploy/userdata.sh` reads it with `--region us-east-2`. One created in another
+Region is invisible to the instances and the boot fails with
+`Missing required config value 'db.host'`.
+
+*Store a new secret* → **Other type of secret** → *Plaintext*. Paste this and
+fill in the `TBD`s in steps 5 and 6.
 
 ```json
 {
@@ -187,7 +201,7 @@ Secret name **`letsvote/app-config`**. Disable rotation. Copy the secret
 ## 5. RDS primary + read replica
 
 1. RDS → *Subnet groups* → *Create*: `letsvote-db-subnet-group`, VPC
-   `letsvote-vpc`, AZs `us-east-1a` + `us-east-1b`, subnets
+   `letsvote-vpc`, AZs `us-east-2a` + `us-east-2b`, subnets
    `database-subnet-01` and `database-subnet-02`.
 
 2. RDS → *Create database* → **Standard create** → **MySQL 8.0**
@@ -211,7 +225,7 @@ Secret name **`letsvote/app-config`**. Disable rotation. Copy the secret
 3. Wait for **Available** → select `primary-db` → *Actions* → **Create read
    replica**
    - DB instance identifier `readreplica-db`
-   - **Availability Zone `us-east-1b`**, same instance class,
+   - **Availability Zone `us-east-2b`**, same instance class,
      **Public access = No**, security group `db-sg`
    - Keep it in the **same VPC** as the source — AWS warns that a replica in a
      different VPC can hit CIDR overlap and become unstable
@@ -226,7 +240,18 @@ exactly why `Db::read()` is used only for tallies.
 
 ## 6. Cognito user pool
 
-Console: <https://console.aws.amazon.com/cognito/v2/idp/user-pools>
+Console (note the Region in the URL):
+<https://us-east-2.console.aws.amazon.com/cognito/v2/idp/user-pools?region=us-east-2>
+
+> ### Create this pool in us-east-2
+> **A user pool cannot be moved between Regions**, and the Region is baked into
+> both the pool ID (`us-east-2_XXXXXXXXX`) and the token issuer URL
+> (`https://cognito-idp.us-east-2.amazonaws.com/...`) that `src/Jwt.php`
+> validates against. Build it in the wrong Region and the fix is to delete it
+> and start step 6 again.
+>
+> Confirm the Region selector in the console top-right reads **Ohio
+> (us-east-2)** before you click *Create user pool*.
 
 > **The Cognito console was redesigned.** The old "Confidential client" radio
 > button is gone, replaced by an **Application type** chooser. And user pools
@@ -254,11 +279,16 @@ Cognito → **User pools** → *Create user pool*.
 > on. AWS documents that if you instead confirm users as an administrator, the
 > login pages show an error after sign-up even though the user was created.
 
+**Check before moving on.** Once created, the pool's **User pool ID** must
+start with `us-east-2_`. If it starts with `us-east-1_`, the pool is in the
+wrong Region — delete it and redo 6a. Nothing later in this runbook will tell
+you about this; it surfaces as a failed sign-in at the very end.
+
 ### 6b. Create the domain
 
 In the pool → **Domain** (or *App integration* → *Domain*) → *Create Cognito
 domain* → prefix `letsvote-auth`. Result:
-`letsvote-auth.auth.us-east-1.amazoncognito.com`.
+`letsvote-auth.auth.us-east-2.amazoncognito.com`.
 
 - **Branding version**: choose **Managed login** (Essentials) or
   **Hosted UI (classic)** (any plan). **Either works with this app** — AWS
@@ -266,6 +296,13 @@ domain* → prefix `letsvote-auth`. Result:
   the two branding versions.
 - You can't use `aws`, `amazon`, or `cognito` in the prefix.
 - A prefix domain takes up to 60 seconds to come up.
+- The `us-east-2` in the resulting hostname is not something you choose — it
+  comes from the pool's Region. Seeing `us-east-1` there means the pool itself
+  is in the wrong Region.
+- The prefix only has to be unique **within the Region**, so `letsvote-auth`
+  being taken in us-east-1 does not stop you using it in us-east-2. If the
+  console rejects it as unavailable, add a suffix (`letsvote-auth-2`) and use
+  the result consistently everywhere below.
 
 ### 6c. Create the app client
 
@@ -287,7 +324,15 @@ In the pool → **App clients** → *Create app client*.
   - **OpenID Connect scopes**: `openid`, `email`, `profile`
 
 Copy the **user pool ID**, **client ID**, **client secret** and **domain** into
-the Secrets Manager secret.
+the Secrets Manager secret from [step 4](#4-secrets-manager) — which must be the
+secret you created in **us-east-2**, since that is the Region the instances read
+it from.
+
+There is no `cognito_region` field in the secret. The application takes the
+Cognito Region from `AWS_REGION` in `deploy/userdata.sh`, which writes it into
+`/etc/letsvote/config.ini` as `[cognito] region`. That is why `AWS_REGION` must
+be `us-east-2`: it sets the token issuer that `src/Jwt.php` checks, not just the
+Region used to read the secret.
 
 > **`redirect_mismatch` is the single most common thing to get stuck on here.**
 > The callback URL must match character for character: scheme, host, path, and
@@ -303,7 +348,7 @@ contract, and all of it is already implemented:
 | Send user to sign in | `GET /oauth2/authorize` | `src/Cognito.php` → `authorizeUrl()` |
 | Send user to sign **up** | `GET /signup` | same, `?new=1` |
 | Swap code for tokens | `POST /oauth2/token` | `exchangeCode()` |
-| Verify the ID token | JWKS at `cognito-idp.…/.well-known/jwks.json` | `src/Jwt.php` |
+| Verify the ID token | JWKS at `cognito-idp.us-east-2.amazonaws.com/us-east-2_XXXXXXXXX/.well-known/jwks.json` | `src/Jwt.php` |
 | Sign out | `GET /logout?client_id=…&logout_uri=…` | `logoutUrl()` |
 
 PKCE is on: AWS supports only `code_challenge_method=S256`, which is what the
@@ -329,7 +374,7 @@ Add an inline policy `read-letsvote-secret`:
   "Statement": [{
     "Effect": "Allow",
     "Action": "secretsmanager:GetSecretValue",
-    "Resource": "arn:aws:secretsmanager:us-east-1:860977520909:secret:letsvote/app-config-*"
+    "Resource": "arn:aws:secretsmanager:us-east-2:860977520909:secret:letsvote/app-config-*"
   }]
 }
 ```
@@ -341,21 +386,33 @@ Role name: `letsvote-ec2-role`.
 
 ## 8. ACM certificate
 
-Certificate Manager, **us-east-1**. CloudFront only accepts certificates from
-this Region, and our ALB is here too, so one certificate covers both.
+**You need two certificates, in two different Regions.** An ALB can only use a
+certificate from its own Region, and CloudFront only accepts certificates from
+us-east-1. Because this build runs in us-east-2, no single certificate can
+serve both.
 
-*Request* → **Public certificate**, three names:
+| | Region | Names on the certificate | Used by |
+|---|---|---|---|
+| **Cert A** | **us-east-2** (Ohio) | `origin.letsvotes.com` | the ALB, [step 11](#11-application-load-balancer) |
+| **Cert B** | **us-east-1** (N. Virginia) | `letsvotes.com`, `www.letsvotes.com` | CloudFront, [step 14](#14-cloudfront) |
 
-- `letsvotes.com`
-- `www.letsvotes.com`
-- `origin.letsvotes.com` ← the name CloudFront uses to reach the ALB
+For each one: Certificate Manager → **check the Region selector in the console
+top-right before you click anything** → *Request* → **Public certificate** →
+enter the names above → validation method **DNS**.
 
-Validation method **DNS**. If the domain is in Route 53, click *Create records
-in Route 53* and it validates in minutes.
+Then, on each certificate's detail page, click **Create records in Route 53**.
+Both certificates validate out of the same hosted zone, and validation takes a
+few minutes. A certificate stuck in *Pending validation* means the DNS record
+was never created — go back and click the button.
+
+> **The mistake this prevents.** Build everything in one Region out of habit
+> and step 11 shows an empty certificate dropdown (no us-east-2 certificate
+> exists), or step 14 refuses your certificate (it isn't in us-east-1). Neither
+> error names the Region as the cause.
 
 > **Why `origin.letsvotes.com`?** CloudFront validates the origin's
 > certificate against the origin domain name you type in. Point it straight at
-> `letsvote-alb-123.us-east-1.elb.amazonaws.com` and the certificate for
+> `letsvote-alb-123.us-east-2.elb.amazonaws.com` and the certificate for
 > `letsvotes.com` won't match — you get a 502. Giving the ALB its own name
 > that is *on the certificate* is the documented fix. AWS states it directly:
 > using HTTPS to an ALB origin requires a certificate "that matches the domain
@@ -379,7 +436,7 @@ EC2 → *Launch templates* → *Create*.
   |---|---|
   | `APP_REPO` | `https://github.com/jayakuma998/letsvote.git` |
   | `SECRET_ID` | `letsvote/app-config` |
-  | `AWS_REGION` | `us-east-1` |
+  | `AWS_REGION` | `us-east-2` |
   | `BASE_URL` | `https://letsvotes.com` |
 
 The repository must be **public**, because the boot script clones it over
@@ -409,14 +466,16 @@ Balancer**, *Create*.
 
 - **Load balancer name** `letsvote-alb`; **Scheme: Internet-facing**;
   **IP address type: IPv4**
-- **Network mapping** → VPC `letsvote-vpc`; select **us-east-1a →
-  public-subnet-01** and **us-east-1b → public-subnet-02**
+- **Network mapping** → VPC `letsvote-vpc`; select **us-east-2a →
+  public-subnet-01** and **us-east-2b → public-subnet-02**
 - **Security groups**: `webapp-lb-sg` (remove the preselected default group)
 - **Listeners and routing**: change the default listener to **HTTPS : 443**,
   default action **Forward to** `letsvote-tg`
 - **Secure listener settings** (this section only appears once you add an HTTPS
-  listener): **Default SSL/TLS certificate** → **From ACM** → the step 8
-  certificate. Leave the recommended security policy.
+  listener): **Default SSL/TLS certificate** → **From ACM** → **Cert A**, the
+  **us-east-2** certificate for `origin.letsvotes.com` from
+  [step 8](#8-acm-certificate). Leave the recommended security policy.
+  An empty dropdown here means Cert A was requested in the wrong Region.
 - After creating, add a second listener **HTTP : 80** → **Redirect to HTTPS**,
   port 443, `HTTP_301`
 
@@ -455,12 +514,12 @@ sudo -i
 cd /var/www/letsvote
 
 # Master credentials, one time only, to create the schema and the app account.
-mysql -h primary-db.XXXX.us-east-1.rds.amazonaws.com -u admin -p < sql/schema.sql
-mysql -h primary-db.XXXX.us-east-1.rds.amazonaws.com -u admin -p letsvote < sql/seed_candidates.sql
+mysql -h primary-db.XXXX.us-east-2.rds.amazonaws.com -u admin -p < sql/schema.sql
+mysql -h primary-db.XXXX.us-east-2.rds.amazonaws.com -u admin -p letsvote < sql/seed_candidates.sql
 
 # Now the limited account the application actually uses.
 # Use the same password you put in db_pass in Secrets Manager.
-mysql -h primary-db.XXXX.us-east-1.rds.amazonaws.com -u admin -p <<'SQL'
+mysql -h primary-db.XXXX.us-east-2.rds.amazonaws.com -u admin -p <<'SQL'
 CREATE USER 'letsvote_app'@'172.16.%.%' IDENTIFIED BY 'THE-DB-PASS-FROM-SECRETS-MANAGER';
 GRANT SELECT, INSERT, UPDATE, DELETE ON letsvote.* TO 'letsvote_app'@'172.16.%.%';
 FLUSH PRIVILEGES;
@@ -496,7 +555,10 @@ distribution*.
 - **Origin request policy: `AllViewer`**
 - **Alternate domain names (CNAMEs)**: `letsvotes.com`,
   `www.letsvotes.com`
-- **Custom SSL certificate**: the step 8 certificate
+- **Custom SSL certificate**: **Cert B**, the **us-east-1** certificate for
+  `letsvotes.com` + `www.letsvotes.com` from [step 8](#8-acm-certificate). This
+  is a *different* certificate from the one on the ALB — CloudFront will not
+  list Cert A at all
 
 > **The cache policy and origin request policy are the two settings that will
 > break your app if you get them wrong.** With the default `CachingOptimized`,
@@ -522,7 +584,7 @@ Route 53 → *Hosted zones* → your domain → *Create record*, three times:
 |---|---|---|
 | `letsvotes.com` | A – **Alias** | Alias to CloudFront distribution |
 | `www.letsvotes.com` | A – **Alias** | Alias to CloudFront distribution |
-| `origin.letsvotes.com` | A – **Alias** | Alias to Application Load Balancer (us-east-1) |
+| `origin.letsvotes.com` | A – **Alias** | Alias to Application Load Balancer (us-east-2) |
 
 Alias records are free and point straight at the AWS resource; a CNAME cannot
 be used at the zone apex.
@@ -627,7 +689,10 @@ Check *Billing → Bills* the next day for anything still accruing.
 | Everyone sees the same logged-in page | CloudFront caching HTML | Same as above, then invalidate `/*` |
 | Sign-up shows an error but the user exists | Cognito can't send the verification email | Set attribute verification to **Send email message**; check the 50/day Cognito cap |
 | `Could not complete your sign-in` | instance can't reach the token endpoint | Check NAT gateway, `webapp-rt`, outbound 443 on `webapp-sg`; read `/var/log/httpd/letsvote_error.log` |
-| `Missing required config value 'db.host'` | Secrets Manager read failed at boot | Check the instance profile and the `-*` on the secret ARN in the IAM policy |
+| `Missing required config value 'db.host'` | Secrets Manager read failed at boot | Check the instance profile and the `-*` on the secret ARN in the IAM policy. Also confirm the secret is in **us-east-2** and the policy ARN says `us-east-2` — a secret in another Region is invisible to the instances |
+| No certificate to choose in the ALB listener dropdown ([step 11](#11-application-load-balancer)) | the certificate was requested in us-east-1 | An ALB only lists certificates from its own Region. Request **Cert A** again in **us-east-2** ([step 8](#8-acm-certificate)) |
+| CloudFront rejects your certificate ([step 14](#14-cloudfront)) | the certificate is in us-east-2 | CloudFront accepts custom certificates only from **us-east-1**. That is **Cert B**, and it is a different certificate from the ALB's |
+| Sign-in fails after a correct-looking Cognito setup | pool Region and `AWS_REGION` disagree | The pool ID must start `us-east-2_` and `AWS_REGION` in the user data must be `us-east-2`. `AWS_REGION` sets the token issuer `src/Jwt.php` validates, so a mismatch fails verification even though every URL looks right |
 | `SQLSTATE[HY000] [2002]` | can't reach RDS | `db-sg` must allow 3306 from `webapp-sg`; RDS must use `letsvote-db-subnet-group` |
 | WAF blocks your own class | rules went straight to Block | Set the rule group to **Count**, review sampled requests, re-enable gradually |
 | `origin.letsvotes.com` serves the site instead of `403` | step 16 not done, or the header value doesn't match | Compare the CloudFront origin custom header with the ALB listener rule condition, character for character |

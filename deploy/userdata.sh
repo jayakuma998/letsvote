@@ -17,7 +17,7 @@ set -euxo pipefail
 # ---------------------------------------------------------------------------
 APP_REPO="https://github.com/jayakuma998/letsvote.git"    # or use the S3 method below
 SECRET_ID="letsvote/app-config"                           # AWS Secrets Manager secret name
-AWS_REGION="us-east-1"
+AWS_REGION="us-east-2"
 BASE_URL="https://letsvotes.com"                          # your real domain, no trailing slash
 
 APP_DIR="/var/www/letsvote"
@@ -56,15 +56,15 @@ git clone --depth 1 "$APP_REPO" "$APP_DIR"
 #
 #    The secret is a JSON object, for example:
 #    {
-#      "db_host": "primary-db.xxxx.us-east-1.rds.amazonaws.com",
-#      "db_host_read": "readreplica-db.xxxx.us-east-1.rds.amazonaws.com",
+#      "db_host": "primary-db.xxxx.us-east-2.rds.amazonaws.com",
+#      "db_host_read": "readreplica-db.xxxx.us-east-2.rds.amazonaws.com",
 #      "db_name": "letsvote",
 #      "db_user": "letsvote_app",
 #      "db_pass": "...",
-#      "cognito_user_pool_id": "us-east-1_XXXXXXXXX",
+#      "cognito_user_pool_id": "us-east-2_XXXXXXXXX",
 #      "cognito_client_id": "...",
 #      "cognito_client_secret": "...",
-#      "cognito_domain": "letsvote-auth.auth.us-east-1.amazoncognito.com"
+#      "cognito_domain": "letsvote-auth.auth.us-east-2.amazoncognito.com"
 #    }
 #
 #    No credentials are baked into the AMI, the launch template or the repo:
