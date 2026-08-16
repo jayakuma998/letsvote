@@ -3,7 +3,7 @@
 -- Run this ONCE against the RDS primary. The read replica copies it
 -- automatically; never run DDL against a replica.
 --
---   mysql -h primary-db.xxxx.us-east-1.rds.amazonaws.com -u admin -p < sql/schema.sql
+--   mysql -h database-1.xxxx.us-east-2.rds.amazonaws.com -u admin -p < sql/schema.sql
 
 CREATE DATABASE IF NOT EXISTS letsvote
     CHARACTER SET utf8mb4

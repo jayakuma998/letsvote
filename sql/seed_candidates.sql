@@ -5,7 +5,7 @@
 -- easily be mistaken for a real poll. Edit the names below to whatever your
 -- class prefers.
 --
---   mysql -h primary-db.xxxx.us-east-1.rds.amazonaws.com -u admin -p letsvote < sql/seed_candidates.sql
+--   mysql -h database-1.xxxx.us-east-2.rds.amazonaws.com -u admin -p letsvote < sql/seed_candidates.sql
 
 USE letsvote;
 

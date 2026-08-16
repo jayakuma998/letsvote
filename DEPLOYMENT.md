@@ -136,6 +136,24 @@ For both **public** subnets only: *Actions* → *Edit subnet settings* → tick
 
 The `local` route for `172.16.0.0/16` is automatic; don't delete it.
 
+> ### Verify `webapp-rt` before moving on
+> Creating a route table and *adding a route to it* are two separate actions in
+> the console, and it is easy to do the first and skip the second. Open
+> `webapp-rt` → **Routes** and confirm you see **two** entries:
+>
+> | Destination | Target |
+> |---|---|
+> | `172.16.0.0/16` | `local` |
+> | `0.0.0.0/0` | `nat-…` |
+>
+> If only the `local` route is there, the instances have no path off the VPC.
+> `deploy/userdata.sh` then fails at `dnf -y update`, never installs PHP, never
+> reads Secrets Manager, and never answers `/health.php` — which you will not
+> discover until the target group sits **unhealthy** at
+> [step 12](#12-auto-scaling-group), ten steps later. Also confirm both
+> `webapp-subnet-01` and `webapp-subnet-02` appear under **Subnet
+> associations**.
+
 **Checkpoint.** The database subnets now have no path to or from the internet.
 That is the point of a separate data tier.
 
@@ -144,27 +162,27 @@ That is the point of a separate data tier.
 VPC → *Security groups*. Create all three empty first, then add rules — they
 reference each other.
 
-**`webapp-lb-sg`** (on the ALB)
+**`letsvote-lb-sg`** (on the ALB)
 
 | Direction | Type | Port | Source/Destination |
 |---|---|---|---|
 | Inbound | HTTPS | 443 | `0.0.0.0/0` (tightened in [step 16](#16-lock-the-alb-to-cloudfront)) |
 | Inbound | HTTP | 80 | `0.0.0.0/0` (only to redirect to 443) |
-| Outbound | HTTP | 80 | `webapp-sg` |
+| Outbound | HTTP | 80 | `letsvote-webapp-sg` |
 
-**`webapp-sg`** (on the EC2 instances)
+**`letsvote-webapp-sg`** (on the EC2 instances)
 
 | Direction | Type | Port | Source/Destination |
 |---|---|---|---|
-| Inbound | HTTP | 80 | **`webapp-lb-sg`** — a security group, not a CIDR |
+| Inbound | HTTP | 80 | **`letsvote-lb-sg`** — a security group, not a CIDR |
 | Outbound | HTTPS | 443 | `0.0.0.0/0` (Cognito, Secrets Manager, dnf) |
-| Outbound | MySQL | 3306 | `db-sg` |
+| Outbound | MySQL | 3306 | `letsvote-db-sg` |
 
-**`db-sg`** (on RDS)
+**`letsvote-db-sg`** (on RDS)
 
 | Direction | Type | Port | Source/Destination |
 |---|---|---|---|
-| Inbound | MySQL | 3306 | **`webapp-sg`** |
+| Inbound | MySQL | 3306 | **`letsvote-webapp-sg`** |
 
 No SSH rule anywhere. You reach instances with **SSM Session Manager** — no
 open port, no key pair, no bastion. This is also what makes the
@@ -200,19 +218,19 @@ Secret name **`letsvote/app-config`**. Disable rotation. Copy the secret
 
 ## 5. RDS primary + read replica
 
-1. RDS → *Subnet groups* → *Create*: `letsvote-db-subnet-group`, VPC
+1. RDS → *Subnet groups* → *Create*: `letsvote-subnet-group`, VPC
    `letsvote-vpc`, AZs `us-east-2a` + `us-east-2b`, subnets
    `database-subnet-01` and `database-subnet-02`.
 
 2. RDS → *Create database* → **Standard create** → **MySQL 8.0**
    - Template **Dev/Test** (Free tier will not let you add a read replica)
-   - DB instance identifier `primary-db`
+   - DB instance identifier `database-1`
    - Master username `admin`; save this password in your own notes — it is
      **not** the application password
    - `db.t4g.micro`, 20 GiB gp3
    - Availability: Single-AZ is fine for class; Multi-AZ doubles the cost
    - Connectivity: VPC `letsvote-vpc`, the subnet group above,
-     **Public access = No**, security group **`db-sg`**
+     **Public access = No**, security group **`letsvote-db-sg`**
    - Additional configuration → Initial database name: **leave blank**
      (`sql/schema.sql` creates it)
    - **Backup → keep automated backups ON with retention ≥ 1 day.**
@@ -222,11 +240,11 @@ Secret name **`letsvote/app-config`**. Disable rotation. Copy the secret
    > retention period to a value other than 0."* With retention at 0 the
    > **Create read replica** action is unavailable and step 3 below fails.
 
-3. Wait for **Available** → select `primary-db` → *Actions* → **Create read
+3. Wait for **Available** → select `database-1` → *Actions* → **Create read
    replica**
-   - DB instance identifier `readreplica-db`
+   - DB instance identifier `database-1-replica`
    - **Availability Zone `us-east-2b`**, same instance class,
-     **Public access = No**, security group `db-sg`
+     **Public access = No**, security group `letsvote-db-sg`
    - Keep it in the **same VPC** as the source — AWS warns that a replica in a
      different VPC can hit CIDR overlap and become unstable
 
@@ -235,6 +253,21 @@ Secret name **`letsvote/app-config`**. Disable rotation. Copy the secret
 
 A read replica is **read-only** — MySQL rejects writes against it. That is
 exactly why `Db::read()` is used only for tallies.
+
+> ### What is actually built right now
+> `database-1` exists and is **Available**, but it does not match the spec
+> above: **db.m7g.large, Multi-AZ, 200 GiB, MySQL 8.4.9**, and it has **no read
+> replica yet**. That is roughly the RDS console's default selection rather
+> than a deliberate choice, and it costs many times the `$25/month` in the
+> [cost table](#0-before-you-start) — the single largest line in this build.
+> Decide whether to keep it or rebuild it small before going further.
+>
+> **MySQL 8.4 vs 8.0.** The application works on either; nothing in
+> `sql/schema.sql` is version-specific. The one thing to know is that 8.4
+> creates users with `caching_sha2_password`, which PHP's `mysqlnd` driver
+> handles — so the `CREATE USER` in [step 13](#13-load-the-database-schema)
+> needs no `WITH mysql_native_password` clause. If you rebuild the instance,
+> either version is fine.
 
 *Docs: [Creating a read replica](https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/USER_ReadRepl.Create.html)*
 
@@ -426,7 +459,7 @@ EC2 → *Launch templates* → *Create*.
 - AMI **Amazon Linux 2023** (x86_64), instance type `t3.micro`
 - Key pair: **Do not include** (Session Manager instead)
 - Network settings: **Do not specify a subnet** (the ASG chooses), security
-  group **`webapp-sg`**
+  group **`letsvote-webapp-sg`**
 - Advanced details → IAM instance profile **`letsvote-ec2-role`**
 - Advanced details → **Metadata version: V2 only (token required)**
 - Advanced details → **User data**: paste `deploy/userdata.sh` as-is. The four
@@ -468,7 +501,7 @@ Balancer**, *Create*.
   **IP address type: IPv4**
 - **Network mapping** → VPC `letsvote-vpc`; select **us-east-2a →
   public-subnet-01** and **us-east-2b → public-subnet-02**
-- **Security groups**: `webapp-lb-sg` (remove the preselected default group)
+- **Security groups**: `letsvote-lb-sg` (remove the preselected default group)
 - **Listeners and routing**: change the default listener to **HTTPS : 443**,
   default action **Forward to** `letsvote-tg`
 - **Secure listener settings** (this section only appears once you add an HTTPS
@@ -514,12 +547,12 @@ sudo -i
 cd /var/www/letsvote
 
 # Master credentials, one time only, to create the schema and the app account.
-mysql -h primary-db.XXXX.us-east-2.rds.amazonaws.com -u admin -p < sql/schema.sql
-mysql -h primary-db.XXXX.us-east-2.rds.amazonaws.com -u admin -p letsvote < sql/seed_candidates.sql
+mysql -h database-1.c3q484mw8u8f.us-east-2.rds.amazonaws.com -u admin -p < sql/schema.sql
+mysql -h database-1.c3q484mw8u8f.us-east-2.rds.amazonaws.com -u admin -p letsvote < sql/seed_candidates.sql
 
 # Now the limited account the application actually uses.
 # Use the same password you put in db_pass in Secrets Manager.
-mysql -h primary-db.XXXX.us-east-2.rds.amazonaws.com -u admin -p <<'SQL'
+mysql -h database-1.c3q484mw8u8f.us-east-2.rds.amazonaws.com -u admin -p <<'SQL'
 CREATE USER 'letsvote_app'@'172.16.%.%' IDENTIFIED BY 'THE-DB-PASS-FROM-SECRETS-MANAGER';
 GRANT SELECT, INSERT, UPDATE, DELETE ON letsvote.* TO 'letsvote_app'@'172.16.%.%';
 FLUSH PRIVILEGES;
@@ -610,7 +643,7 @@ plus a load balancer rule that refuses everything else.
      value → **Action = Forward to** `letsvote-tg`, priority 1
    - Edit the **default** rule: delete the forward action, replace with
      **Return fixed response**, response code **403**, body `Access denied`
-3. Optionally also narrow `webapp-lb-sg` inbound 443 from `0.0.0.0/0` to the
+3. Optionally also narrow `letsvote-lb-sg` inbound 443 from `0.0.0.0/0` to the
    **`com.amazonaws.global.cloudfront.origin-facing`** managed prefix list,
    which blocks non-CloudFront traffic at layer 3/4.
 
@@ -681,19 +714,19 @@ Check *Billing → Bills* the next day for anything still accruing.
 | Symptom | Cause | Fix |
 |---|---|---|
 | Targets stuck **unhealthy** | user data failed | Session Manager in, read `/var/log/cloud-init-output.log`, then `curl localhost/health.php` |
-| **Create read replica** greyed out | backup retention is 0 | Modify `primary-db`, set backup retention ≥ 1 day, apply, then retry |
+| **Create read replica** greyed out | backup retention is 0 | Modify `database-1`, set backup retention ≥ 1 day, apply, then retry |
 | `502 Bad Gateway` from CloudFront | origin certificate mismatch | Origin must be `origin.letsvotes.com` and that name must be on the ACM certificate |
-| `503` from the ALB | no healthy targets | Check the target group; `webapp-sg` must allow 80 **from `webapp-lb-sg`** |
+| `503` from the ALB | no healthy targets | Check the target group; `letsvote-webapp-sg` must allow 80 **from `letsvote-lb-sg`** |
 | Cognito `redirect_mismatch` | callback URL differs | Must equal `https://letsvotes.com/callback.php` exactly |
 | Logged out at random / "sign-in link expired" | CloudFront not forwarding cookies | Cache policy `CachingDisabled`, origin request policy `AllViewer` |
 | Everyone sees the same logged-in page | CloudFront caching HTML | Same as above, then invalidate `/*` |
 | Sign-up shows an error but the user exists | Cognito can't send the verification email | Set attribute verification to **Send email message**; check the 50/day Cognito cap |
-| `Could not complete your sign-in` | instance can't reach the token endpoint | Check NAT gateway, `webapp-rt`, outbound 443 on `webapp-sg`; read `/var/log/httpd/letsvote_error.log` |
+| `Could not complete your sign-in` | instance can't reach the token endpoint | Check NAT gateway, `webapp-rt`, outbound 443 on `letsvote-webapp-sg`; read `/var/log/httpd/letsvote_error.log` |
 | `Missing required config value 'db.host'` | Secrets Manager read failed at boot | Check the instance profile and the `-*` on the secret ARN in the IAM policy. Also confirm the secret is in **us-east-2** and the policy ARN says `us-east-2` — a secret in another Region is invisible to the instances |
 | No certificate to choose in the ALB listener dropdown ([step 11](#11-application-load-balancer)) | the certificate was requested in us-east-1 | An ALB only lists certificates from its own Region. Request **Cert A** again in **us-east-2** ([step 8](#8-acm-certificate)) |
 | CloudFront rejects your certificate ([step 14](#14-cloudfront)) | the certificate is in us-east-2 | CloudFront accepts custom certificates only from **us-east-1**. That is **Cert B**, and it is a different certificate from the ALB's |
 | Sign-in fails after a correct-looking Cognito setup | pool Region and `AWS_REGION` disagree | The pool ID must start `us-east-2_` and `AWS_REGION` in the user data must be `us-east-2`. `AWS_REGION` sets the token issuer `src/Jwt.php` validates, so a mismatch fails verification even though every URL looks right |
-| `SQLSTATE[HY000] [2002]` | can't reach RDS | `db-sg` must allow 3306 from `webapp-sg`; RDS must use `letsvote-db-subnet-group` |
+| `SQLSTATE[HY000] [2002]` | can't reach RDS | `letsvote-db-sg` must allow 3306 from `letsvote-webapp-sg`; RDS must use `letsvote-subnet-group` |
 | WAF blocks your own class | rules went straight to Block | Set the rule group to **Count**, review sampled requests, re-enable gradually |
 | `origin.letsvotes.com` serves the site instead of `403` | step 16 not done, or the header value doesn't match | Compare the CloudFront origin custom header with the ALB listener rule condition, character for character |
 | Everything returns `403 Access denied` | the ALB default rule is catching CloudFront too | The header rule must have a lower priority number (evaluated first) than the default fixed-response rule |

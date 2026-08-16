@@ -56,8 +56,8 @@ git clone --depth 1 "$APP_REPO" "$APP_DIR"
 #
 #    The secret is a JSON object, for example:
 #    {
-#      "db_host": "primary-db.xxxx.us-east-2.rds.amazonaws.com",
-#      "db_host_read": "readreplica-db.xxxx.us-east-2.rds.amazonaws.com",
+#      "db_host": "database-1.xxxx.us-east-2.rds.amazonaws.com",
+#      "db_host_read": "database-1-replica.xxxx.us-east-2.rds.amazonaws.com",
 #      "db_name": "letsvote",
 #      "db_user": "letsvote_app",
 #      "db_pass": "...",

@@ -9,8 +9,8 @@ declare(strict_types=1);
  * client protocol and IP arrive in X-Forwarded-* headers instead.
  *
  * SECURITY NOTE: these headers are only trustworthy because the webapp
- * security group (webapp-sg) accepts port 80 exclusively from the ALB
- * security group (webapp-lb-sg). Nobody on the internet can reach the
+ * security group (letsvote-webapp-sg) accepts port 80 exclusively from the ALB
+ * security group (letsvote-lb-sg). Nobody on the internet can reach the
  * instances directly to forge them.
  */
 final class Http
