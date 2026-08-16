@@ -276,6 +276,24 @@ exactly why `Db::read()` is used only for tallies.
 Console (note the Region in the URL):
 <https://us-east-2.console.aws.amazon.com/cognito/v2/idp/user-pools?region=us-east-2>
 
+> ### The console changed — this step was rewritten
+> AWS replaced the long multi-page "Create user pool" wizard with a single
+> **Define your application** screen. The practical differences:
+>
+> - **The pool and its first app client are now created together.** There is no
+>   longer a separate "create an app client" step afterwards. The old 6a/6c
+>   split in this runbook no longer matches anything on screen.
+> - **Most of the old wizard is gone from creation.** Password policy, MFA,
+>   email provider, self-service sign-up and attribute verification are no
+>   longer asked for up front — they are edited *after* the pool exists.
+> - **The choice that used to be "Confidential client"** is now the
+>   **Application type** at the very top of the creation screen, and it decides
+>   whether you get a client secret. See the warning in 6a.
+>
+> If your screen still shows the older long wizard, AWS has not rolled the new
+> console out to this Region yet. Everything below still applies; the settings
+> are just spread across more pages.
+
 > ### Create this pool in us-east-2
 > **A user pool cannot be moved between Regions**, and the Region is baked into
 > both the pool ID (`us-east-2_XXXXXXXXX`) and the token issuer URL
@@ -286,47 +304,94 @@ Console (note the Region in the URL):
 > Confirm the Region selector in the console top-right reads **Ohio
 > (us-east-2)** before you click *Create user pool*.
 
-> **The Cognito console was redesigned.** The old "Confidential client" radio
-> button is gone, replaced by an **Application type** chooser. And user pools
-> now have a **feature plan**. Both are covered below.
+### 6a. Create the pool and its app client
 
-### 6a. Create the user pool
+Cognito → **User pools** → *Create user pool*. (The console may also offer
+*Get started for free in less than five minutes* — same flow.)
 
-Cognito → **User pools** → *Create user pool*.
+**Under "Define your application":**
 
-- **Feature plan**: the default for new pools is **Essentials**. Keep it —
-  10,000 MAU are free, and *managed login* (the modern sign-in UI) requires
-  Essentials or Plus. Choosing **Lite** is also fine and slightly cheaper past
-  the free tier, but then you get the **classic hosted UI** only.
-- Sign-in options: **Email**
-- Password policy: Cognito defaults are fine
-- MFA: **No MFA** for class (or optional TOTP to demo it)
-- Self-service sign-up: **enabled**
-- Attribute verification: **Send email message, verify email address**
-- Required attributes: `email`, plus add **`name`**
-- Email provider: **Send email with Cognito** — capped at **50 emails/day**.
-  Fine for a class, nothing more. Real traffic needs SES.
-- User pool name: `letsvote-users`
+| Field | Choose |
+|---|---|
+| **Application type** | **`Traditional web application`** |
+| **Name your application** | `letsvote-web` |
 
-> Keep **"Allow Cognito to automatically send messages to verify and confirm"**
-> on. AWS documents that if you instead confirm users as an administrator, the
-> login pages show an error after sign-up even though the user was created.
+> ### Application type is irreversible, and it is the one that matters
+> **`Traditional web application` is the only choice that generates a client
+> secret**, and `src/Cognito.php` authenticates to the token endpoint with
+> `client_secret_basic` — it cannot work without one.
+>
+> AWS documents the client secret as unchangeable after creation: to get one
+> later you must **create a whole new app client**. Pick
+> *Single-page application* by mistake and sign-in fails at the token exchange
+> with an error that does not mention the client secret.
 
-**Check before moving on.** Once created, the pool's **User pool ID** must
-start with `us-east-2_`. If it starts with `us-east-1_`, the pool is in the
-wrong Region — delete it and redo 6a. Nothing later in this runbook will tell
-you about this; it surfaces as a failed sign-in at the very end.
+**Under "Configure options":**
 
-### 6b. Create the domain
+| Field | Choose |
+|---|---|
+| **Options for sign-in identifiers** | **Email** |
+| **Required attributes for sign-up** | **`email`** and **`name`** |
+
+> ### Both of these are also irreversible
+> AWS lists **sign-in options** and **required attributes** among the settings
+> you cannot change without creating a new user pool. `name` is easy to miss
+> here and the app reads it, so add it now rather than rebuilding later.
+
+**Under "Add a return URL":**
+
+```
+https://letsvotes.com/callback.php
+```
+
+This is the same value the old console called the *callback URL*. It must match
+what `src/Cognito.php` sends, character for character — scheme, host, path, and
+no trailing slash.
+
+Choose **Create your application**.
+
+On the **Set up your application** page that follows, AWS offers framework code
+examples. Ignore them — this app already implements the flow. Scroll down and
+choose **Go to overview**.
+
+**Check before moving on.** The **User pool ID** on the overview page must start
+with `us-east-2_`. If it starts with `us-east-1_`, the pool is in the wrong
+Region — delete it and redo 6a.
+
+### 6b. Finish the app client settings
+
+The quick-create flow sets defaults it never asked you about, and two of them
+are wrong for this app. In the pool → **App clients** → `letsvote-web` → edit
+the **Login pages** / **Hosted UI** settings:
+
+| Setting | Required value |
+|---|---|
+| **Allowed callback URLs** | `https://letsvotes.com/callback.php` |
+| **Allowed sign-out URLs** | `https://letsvotes.com/` — **note the trailing slash**, unlike the callback URL |
+| **OAuth 2.0 grant types** | **Authorization code grant** only |
+| **OpenID Connect scopes** | `openid`, `email`, `profile` |
+
+The sign-out URL is not requested anywhere during creation, so it is empty until
+you set it here. Without it, `logout.php` sends users to Cognito and Cognito
+refuses to redirect them back.
+
+Never enable **Implicit grant** — it returns tokens in the browser URL bar.
+
+For local development you may also add `http://localhost:8000/callback.php`;
+Cognito permits plain `http` only for `localhost`.
+
+Then copy the **Client ID** and **Client secret** (revealed with *Show client
+secret*) into the Secrets Manager secret.
+
+### 6c. Create the managed login domain
 
 In the pool → **Domain** (or *App integration* → *Domain*) → *Create Cognito
 domain* → prefix `letsvote-auth`. Result:
 `letsvote-auth.auth.us-east-2.amazoncognito.com`.
 
-- **Branding version**: choose **Managed login** (Essentials) or
-  **Hosted UI (classic)** (any plan). **Either works with this app** — AWS
-  documents that all endpoint paths except `/passkeys/add` are shared between
-  the two branding versions.
+- **Branding version**: **Managed login** or **Hosted UI (classic)** —
+  **either works with this app.** AWS documents that all endpoint paths except
+  `/passkeys/add` are shared between the two branding versions.
 - You can't use `aws`, `amazon`, or `cognito` in the prefix.
 - A prefix domain takes up to 60 seconds to come up.
 - The `us-east-2` in the resulting hostname is not something you choose — it
@@ -337,32 +402,42 @@ domain* → prefix `letsvote-auth`. Result:
   console rejects it as unavailable, add a suffix (`letsvote-auth-2`) and use
   the result consistently everywhere below.
 
-### 6c. Create the app client
+### 6d. Sign-up and verification settings
 
-In the pool → **App clients** → *Create app client*.
+These are no longer part of creation. Confirm them in the pool's settings tabs
+(**Sign-up**, **Sign-in**, **Messaging**):
 
-- **Application type: `Traditional web application`**
-  This is the replacement for the old "Confidential client" option, and it is
-  what generates the **client secret** that the PHP code uses for
-  `client_secret_basic` authentication at the token endpoint.
-- Name: `letsvote-web`
-- **Return URL** (a.k.a. callback URL): `https://letsvotes.com/callback.php`
-- Then open the client's settings and confirm/complete:
-  - **Allowed callback URLs**: `https://letsvotes.com/callback.php`
-    *(optionally also `http://localhost:8000/callback.php` — Cognito permits
-    plain `http` for `localhost` only)*
-  - **Allowed sign-out URLs**: `https://letsvotes.com/`
-  - **OAuth 2.0 grant types**: **Authorization code grant** only. Never
-    *Implicit* — it puts tokens in the browser URL bar.
-  - **OpenID Connect scopes**: `openid`, `email`, `profile`
+- **Self-service sign-up**: **enabled** — otherwise nobody can register
+- **Attribute verification**: **Send email message, verify email address**
+- **Email provider**: **Send email with Cognito** — capped at **50 emails/day**.
+  Fine for a class, nothing more. Real traffic needs SES.
+- **MFA**: **No MFA** for class (or optional TOTP to demo it)
+- **Password policy**: Cognito defaults are fine
 
-Copy the **user pool ID**, **client ID**, **client secret** and **domain** into
-the Secrets Manager secret from [step 4](#4-secrets-manager) — which must be the
-secret you created in **us-east-2**, since that is the Region the instances read
-it from.
+> Keep **"Allow Cognito to automatically send messages to verify and confirm"**
+> on. AWS documents that if you instead confirm users as an administrator, the
+> login pages show an error after sign-up even though the user was created.
 
-There is no `cognito_region` field in the secret. The application takes the
-Cognito Region from `AWS_REGION` in `deploy/userdata.sh`, which writes it into
+**Feature plan.** Pools still have **Lite / Essentials / Plus**, but it is no
+longer a creation-wizard question — new pools default to **Essentials** and you
+change it in the pool's settings. Keep Essentials: 10,000 MAU are free, and
+*managed login* requires Essentials or Plus. **Lite** is also fine and slightly
+cheaper past the free tier, but gives you the classic hosted UI only.
+
+### 6e. Record the values
+
+Copy into the Secrets Manager secret from [step 4](#4-secrets-manager) — the one
+in **us-east-2**, since that is the Region the instances read it from:
+
+| Secret key | Where to find it |
+|---|---|
+| `cognito_user_pool_id` | pool overview, `us-east-2_XXXXXXXXX` |
+| `cognito_client_id` | App clients → `letsvote-web` |
+| `cognito_client_secret` | same page, *Show client secret* |
+| `cognito_domain` | `letsvote-auth.auth.us-east-2.amazoncognito.com` — hostname only, no `https://`, no trailing slash |
+
+There is no `cognito_region` field. The application takes the Cognito Region
+from `AWS_REGION` in `deploy/userdata.sh`, which writes it into
 `/etc/letsvote/config.ini` as `[cognito] region`. That is why `AWS_REGION` must
 be `us-east-2`: it sets the token issuer that `src/Jwt.php` checks, not just the
 Region used to read the secret.
@@ -387,7 +462,15 @@ contract, and all of it is already implemented:
 PKCE is on: AWS supports only `code_challenge_method=S256`, which is what the
 code sends, and `code_verifier` is accepted alongside a client secret.
 
-*Docs: [App clients](https://docs.aws.amazon.com/cognito/latest/developerguide/cognito-user-pools-app-idp-settings.html) ·
+> ### What you cannot change later
+> AWS lists these as fixed once created — all three are decided in 6a:
+> **client secret** (needs a new app client), **sign-in options** and
+> **required attributes** (both need a new user pool). Also fixed: user pool ID
+> and username case sensitivity. The user pool *name* can now be changed, which
+> it could not before.
+
+*Docs: [Create an application in the console](https://docs.aws.amazon.com/cognito/latest/developerguide/getting-started-user-pools-application.html) ·
+[Settings you can't change](https://docs.aws.amazon.com/cognito/latest/developerguide/cognito-user-pool-updating.html) ·
 [Feature plans](https://docs.aws.amazon.com/cognito/latest/developerguide/cognito-sign-in-feature-plans.html) ·
 [Managed login endpoints](https://docs.aws.amazon.com/cognito/latest/developerguide/managed-login-endpoints.html) ·
 [Token endpoint](https://docs.aws.amazon.com/cognito/latest/developerguide/token-endpoint.html)*
