@@ -3,8 +3,13 @@
 Every step is done **by hand in the AWS console**, in this order. The order
 matters: each step produces an ID the next step needs.
 
-Region for the whole build: **us-east-1**. Replace `letsvote.example` with the
-domain you actually register.
+Region for the whole build: **us-east-1**.
+
+> **This copy is filled in for a specific build:** domain `letsvotes.com`,
+> AWS account `860977520909`, application repository
+> `https://github.com/jayakuma998/letsvote.git`. If you are building your own,
+> substitute your own registered domain, account ID and repository everywhere
+> they appear below.
 
 > **Console steps verified against AWS documentation on 11 August 2026.**
 > Console wording drifts. Where AWS has recently renamed things, both the old
@@ -41,10 +46,18 @@ domain you actually register.
 
 ## 0. Before you start
 
-**The domain.** `letsvote.com` has been registered for years. In Route 53 →
-*Registered domains* → *Register domain*, try `letsvote.click` / `.link` /
-`.info` (a few dollars a year) or `letsvote-class.com`. Do this first —
-ACM validation in step 8 depends on it.
+**The domain.** Already done for this build: **`letsvotes.com`** is registered
+in Route 53 (hosted zone `Z06464701RGI48KVNHF25`) with auto-renew on. Note the
+plural — `letsvote.com` without the `s` has been registered by someone else for
+years, which is why this build uses `letsvotes.com`. That single character has
+to be right in the ACM certificate, the Cognito callback URL and the CloudFront
+CNAMEs, or you get the `redirect_mismatch` and 502 failures in
+[troubleshooting](#19-when-it-does-not-work).
+
+If you are building your own copy, register a domain **first** — ACM validation
+in step 8 depends on it — and confirm the ICANN verification email, or the
+registrar suspends the domain 15 days later. `.click` / `.link` / `.info` cost
+a few dollars a year.
 
 **Cost.** This is not free tier. Rough us-east-1 monthly estimate:
 
@@ -263,12 +276,12 @@ In the pool → **App clients** → *Create app client*.
   what generates the **client secret** that the PHP code uses for
   `client_secret_basic` authentication at the token endpoint.
 - Name: `letsvote-web`
-- **Return URL** (a.k.a. callback URL): `https://letsvote.example/callback.php`
+- **Return URL** (a.k.a. callback URL): `https://letsvotes.com/callback.php`
 - Then open the client's settings and confirm/complete:
-  - **Allowed callback URLs**: `https://letsvote.example/callback.php`
+  - **Allowed callback URLs**: `https://letsvotes.com/callback.php`
     *(optionally also `http://localhost:8000/callback.php` — Cognito permits
     plain `http` for `localhost` only)*
-  - **Allowed sign-out URLs**: `https://letsvote.example/`
+  - **Allowed sign-out URLs**: `https://letsvotes.com/`
   - **OAuth 2.0 grant types**: **Authorization code grant** only. Never
     *Implicit* — it puts tokens in the browser URL bar.
   - **OpenID Connect scopes**: `openid`, `email`, `profile`
@@ -316,7 +329,7 @@ Add an inline policy `read-letsvote-secret`:
   "Statement": [{
     "Effect": "Allow",
     "Action": "secretsmanager:GetSecretValue",
-    "Resource": "arn:aws:secretsmanager:us-east-1:YOUR-ACCOUNT-ID:secret:letsvote/app-config-*"
+    "Resource": "arn:aws:secretsmanager:us-east-1:860977520909:secret:letsvote/app-config-*"
   }]
 }
 ```
@@ -333,17 +346,17 @@ this Region, and our ALB is here too, so one certificate covers both.
 
 *Request* → **Public certificate**, three names:
 
-- `letsvote.example`
-- `www.letsvote.example`
-- `origin.letsvote.example` ← the name CloudFront uses to reach the ALB
+- `letsvotes.com`
+- `www.letsvotes.com`
+- `origin.letsvotes.com` ← the name CloudFront uses to reach the ALB
 
 Validation method **DNS**. If the domain is in Route 53, click *Create records
 in Route 53* and it validates in minutes.
 
-> **Why `origin.letsvote.example`?** CloudFront validates the origin's
+> **Why `origin.letsvotes.com`?** CloudFront validates the origin's
 > certificate against the origin domain name you type in. Point it straight at
 > `letsvote-alb-123.us-east-1.elb.amazonaws.com` and the certificate for
-> `letsvote.example` won't match — you get a 502. Giving the ALB its own name
+> `letsvotes.com` won't match — you get a 502. Giving the ALB its own name
 > that is *on the certificate* is the documented fix. AWS states it directly:
 > using HTTPS to an ALB origin requires a certificate "that matches the domain
 > name that is routed to your Application Load Balancer."
@@ -359,13 +372,20 @@ EC2 → *Launch templates* → *Create*.
   group **`webapp-sg`**
 - Advanced details → IAM instance profile **`letsvote-ec2-role`**
 - Advanced details → **Metadata version: V2 only (token required)**
-- Advanced details → **User data**: paste `deploy/userdata.sh` after editing
-  the four variables at the top (`APP_REPO`, `SECRET_ID`, `AWS_REGION`,
-  `BASE_URL`)
+- Advanced details → **User data**: paste `deploy/userdata.sh` as-is. The four
+  variables at the top are already filled in for this build:
 
-Push this repo to GitHub first so `APP_REPO` resolves — or for a private repo,
-upload a zip to S3, grant the role `s3:GetObject` on it, and use the
-alternative command already commented into the script.
+  | Variable | Value |
+  |---|---|
+  | `APP_REPO` | `https://github.com/jayakuma998/letsvote.git` |
+  | `SECRET_ID` | `letsvote/app-config` |
+  | `AWS_REGION` | `us-east-1` |
+  | `BASE_URL` | `https://letsvotes.com` |
+
+The repository must be **public**, because the boot script clones it over
+HTTPS with no credentials — an SSH remote you can push to is not enough. If you
+keep it private instead, upload a zip to S3, grant the role `s3:GetObject` on
+it, and use the alternative command already commented into the script.
 
 AL2023 ships PHP 8.1–8.5; the script installs the default `php` package and
 then **hard-fails the boot if PHP is older than 8.1**, so a bad AMI shows up
@@ -465,7 +485,7 @@ UPDATE users SET is_admin = 1 WHERE email = 'you@example.com';
 Console: <https://console.aws.amazon.com/cloudfront/v4/home> → *Create
 distribution*.
 
-- **Origin domain**: `origin.letsvote.example` — type it manually; you create
+- **Origin domain**: `origin.letsvotes.com` — type it manually; you create
   that DNS record in step 15 and CloudFront accepts a name that doesn't resolve
   yet
 - **Protocol: HTTPS only**, minimum origin SSL **TLSv1.2**
@@ -474,8 +494,8 @@ distribution*.
   without POST nobody can sign in or vote
 - **Cache policy: `CachingDisabled`**
 - **Origin request policy: `AllViewer`**
-- **Alternate domain names (CNAMEs)**: `letsvote.example`,
-  `www.letsvote.example`
+- **Alternate domain names (CNAMEs)**: `letsvotes.com`,
+  `www.letsvotes.com`
 - **Custom SSL certificate**: the step 8 certificate
 
 > **The cache policy and origin request policy are the two settings that will
@@ -500,19 +520,19 @@ Route 53 → *Hosted zones* → your domain → *Create record*, three times:
 
 | Record | Type | Value |
 |---|---|---|
-| `letsvote.example` | A – **Alias** | Alias to CloudFront distribution |
-| `www.letsvote.example` | A – **Alias** | Alias to CloudFront distribution |
-| `origin.letsvote.example` | A – **Alias** | Alias to Application Load Balancer (us-east-1) |
+| `letsvotes.com` | A – **Alias** | Alias to CloudFront distribution |
+| `www.letsvotes.com` | A – **Alias** | Alias to CloudFront distribution |
+| `origin.letsvotes.com` | A – **Alias** | Alias to Application Load Balancer (us-east-1) |
 
 Alias records are free and point straight at the AWS resource; a CNAME cannot
 be used at the zone apex.
 
-Give DNS a few minutes, then open `https://letsvote.example`.
+Give DNS a few minutes, then open `https://letsvotes.com`.
 
 ## 16. Lock the ALB to CloudFront
 
 **Do not skip this.** An internet-facing ALB has a publicly resolvable DNS
-name, so at this point anyone can hit `origin.letsvote.example` directly and
+name, so at this point anyone can hit `origin.letsvotes.com` directly and
 walk straight past CloudFront *and* the WAF rules you add in step 17. Rate
 limiting, managed rule groups, TLS policy — all bypassed.
 
@@ -532,7 +552,7 @@ plus a load balancer rule that refuses everything else.
    **`com.amazonaws.global.cloudfront.origin-facing`** managed prefix list,
    which blocks non-CloudFront traffic at layer 3/4.
 
-Test: `https://letsvote.example` works; `https://origin.letsvote.example`
+Test: `https://letsvotes.com` works; `https://origin.letsvotes.com`
 returns `403 Access denied`.
 
 ## 17. WAF
@@ -600,9 +620,9 @@ Check *Billing → Bills* the next day for anything still accruing.
 |---|---|---|
 | Targets stuck **unhealthy** | user data failed | Session Manager in, read `/var/log/cloud-init-output.log`, then `curl localhost/health.php` |
 | **Create read replica** greyed out | backup retention is 0 | Modify `primary-db`, set backup retention ≥ 1 day, apply, then retry |
-| `502 Bad Gateway` from CloudFront | origin certificate mismatch | Origin must be `origin.letsvote.example` and that name must be on the ACM certificate |
+| `502 Bad Gateway` from CloudFront | origin certificate mismatch | Origin must be `origin.letsvotes.com` and that name must be on the ACM certificate |
 | `503` from the ALB | no healthy targets | Check the target group; `webapp-sg` must allow 80 **from `webapp-lb-sg`** |
-| Cognito `redirect_mismatch` | callback URL differs | Must equal `https://letsvote.example/callback.php` exactly |
+| Cognito `redirect_mismatch` | callback URL differs | Must equal `https://letsvotes.com/callback.php` exactly |
 | Logged out at random / "sign-in link expired" | CloudFront not forwarding cookies | Cache policy `CachingDisabled`, origin request policy `AllViewer` |
 | Everyone sees the same logged-in page | CloudFront caching HTML | Same as above, then invalidate `/*` |
 | Sign-up shows an error but the user exists | Cognito can't send the verification email | Set attribute verification to **Send email message**; check the 50/day Cognito cap |
@@ -610,7 +630,7 @@ Check *Billing → Bills* the next day for anything still accruing.
 | `Missing required config value 'db.host'` | Secrets Manager read failed at boot | Check the instance profile and the `-*` on the secret ARN in the IAM policy |
 | `SQLSTATE[HY000] [2002]` | can't reach RDS | `db-sg` must allow 3306 from `webapp-sg`; RDS must use `letsvote-db-subnet-group` |
 | WAF blocks your own class | rules went straight to Block | Set the rule group to **Count**, review sampled requests, re-enable gradually |
-| `origin.letsvote.example` serves the site instead of `403` | step 16 not done, or the header value doesn't match | Compare the CloudFront origin custom header with the ALB listener rule condition, character for character |
+| `origin.letsvotes.com` serves the site instead of `403` | step 16 not done, or the header value doesn't match | Compare the CloudFront origin custom header with the ALB listener rule condition, character for character |
 | Everything returns `403 Access denied` | the ALB default rule is catching CloudFront too | The header rule must have a lower priority number (evaluated first) than the default fixed-response rule |
 
 Application errors land in `/var/log/httpd/letsvote_error.log` on each
@@ -627,5 +647,5 @@ follow-up exercise — with two instances, tailing logs by hand gets old fast.
   page went to the **read replica**.
 - Try to vote twice from two browser tabs and watch the database refuse the
   second one.
-- Hit `https://origin.letsvote.example` directly and get the `403` from
+- Hit `https://origin.letsvotes.com` directly and get the `403` from
   [step 16](#16-lock-the-alb-to-cloudfront).
