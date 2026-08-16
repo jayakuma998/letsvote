@@ -1,0 +1,13 @@
+# Never commit a real configuration file — it holds the database password
+# and the Cognito client secret.
+config/config.local.ini
+config/config.ini
+*.local.ini
+
+# Local scratch
+.DS_Store
+*.log
+/tmp/
+
+# Machine-local Claude Code permissions
+.claude/settings.local.json
