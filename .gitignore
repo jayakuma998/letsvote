@@ -11,3 +11,6 @@ config/config.ini
 
 # Machine-local Claude Code permissions
 .claude/settings.local.json
+
+# Build artifacts from deploy/package.sh — these go to S3, not to git
+dist/

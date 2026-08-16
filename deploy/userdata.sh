@@ -15,10 +15,17 @@ set -euxo pipefail
 # ---------------------------------------------------------------------------
 # 1. Things you must change
 # ---------------------------------------------------------------------------
-APP_REPO="https://github.com/jayakuma998/letsvote.git"    # or use the S3 method below
+APP_BUCKET="letsvote-artifacts-860977520909"              # S3 artifact bucket
+APP_VERSION="1.0.0"                                       # which build to run -- see below
 SECRET_ID="letsvote/app-config"                           # AWS Secrets Manager secret name
 AWS_REGION="us-east-2"
 BASE_URL="https://letsvotes.com"                          # your real domain, no trailing slash
+
+# APP_VERSION is the whole deployment story. Instances fetch exactly this
+# object, so every instance in the fleet runs byte-identical code no matter
+# when it launched, and a rollback is: put the old version back here, save a
+# new launch template version, start an instance refresh. Nothing races.
+APP_KEY="letsvote/letsvote-${APP_VERSION}.zip"
 
 APP_DIR="/var/www/letsvote"
 
@@ -27,13 +34,17 @@ APP_DIR="/var/www/letsvote"
 #    php-mysqlnd  -> PDO MySQL driver
 #    php-mbstring -> mb_* string functions
 #    mariadb105   -> the `mysql` client, for loading sql/schema.sql by hand
+#    unzip        -> unpacking the S3 artifact
+#
+#    The AWS CLI and the SSM Agent are already on the AL2023 AMI, which is why
+#    section 3 can call `aws s3 cp` and why Session Manager works with no SSH.
 #
 #    AL2023 offers PHP 8.1 through 8.5. Plain `php` installs the distribution
 #    default; to pin a version instead, use `php8.3`, `php8.3-mysqlnd`, etc.
 # ---------------------------------------------------------------------------
 dnf -y update
 dnf -y install httpd php php-cli php-mysqlnd php-mbstring php-opcache php-xml \
-               git jq mariadb105
+               unzip jq mariadb105
 
 # The application uses PHP 8.1 syntax (enums of union types, `never` return
 # type, readonly-style promotion). Fail loudly at boot rather than serving 500s.
@@ -43,13 +54,28 @@ php -r 'exit(PHP_VERSION_ID >= 80100 ? 0 : 1);' || {
 }
 
 # ---------------------------------------------------------------------------
-# 3. Application code
-#    Public repo: git clone. Private repo: push a zip to S3 instead and use
-#      aws s3 cp s3://YOUR-BUCKET/letsvote.zip /tmp/ && unzip -o /tmp/letsvote.zip -d "$APP_DIR"
-#    (the instance role needs s3:GetObject on that object)
+# 3. Application code, from the S3 artifact bucket
+#
+#    Nothing here reaches the internet. With the S3 gateway VPC endpoint from
+#    DEPLOYMENT.md step 4b, this fetch stays on the AWS network -- it does not
+#    traverse the NAT gateway, so it costs nothing in data processing and does
+#    not depend on anything outside the VPC being up.
+#
+#    Authentication is the instance profile from step 7. No credentials on disk,
+#    no deploy key, no token in the launch template.
 # ---------------------------------------------------------------------------
 rm -rf "$APP_DIR"
-git clone --depth 1 "$APP_REPO" "$APP_DIR"
+mkdir -p "$APP_DIR"
+
+aws s3 cp "s3://${APP_BUCKET}/${APP_KEY}" /tmp/letsvote.zip --region "$AWS_REGION"
+unzip -q -o /tmp/letsvote.zip -d "$APP_DIR"
+rm -f /tmp/letsvote.zip
+
+# A partial or wrong-shaped artifact should fail here, not as a 404 later.
+test -f "$APP_DIR/public/health.php" || {
+    echo "letsvote: artifact ${APP_KEY} did not contain public/health.php" >&2
+    exit 1
+}
 
 # ---------------------------------------------------------------------------
 # 4. Configuration from AWS Secrets Manager

@@ -15,10 +15,15 @@ Region for the whole build: **us-east-2** (Ohio).
 > single-Region us-east-1 build one certificate would cover both.
 
 > **This copy is filled in for a specific build:** domain `letsvotes.com`,
-> AWS account `860977520909`, application repository
-> `https://github.com/jayakuma998/letsvote.git`. If you are building your own,
-> substitute your own registered domain, account ID and repository everywhere
+> AWS account `860977520909`, source at
+> `https://github.com/jayakuma998/letsvote.git`, and application artifacts in
+> `s3://letsvote-artifacts-860977520909/letsvote/`. If you are building your
+> own, substitute your own domain, account ID, repository and bucket everywhere
 > they appear below.
+>
+> The instances install from **S3, not from GitHub** — the repository is where
+> the code is developed, the bucket is what gets deployed. See
+> [step 4b](#4b-s3-artifact-bucket-and-gateway-endpoint).
 
 > **Console steps verified against AWS documentation on 11 August 2026.**
 > Console wording drifts. Where AWS has recently renamed things, both the old
@@ -35,11 +40,12 @@ Region for the whole build: **us-east-2** (Ohio).
 | 2 | [Internet gateway, NAT, route tables](#2-internet-gateway-nat-gateway-route-tables) | 1 |
 | 3 | [Security groups](#3-security-groups) | 1 |
 | 4 | [Secrets Manager](#4-secrets-manager) | — |
+| 4b | [S3 artifact bucket + gateway endpoint](#4b-s3-artifact-bucket-and-gateway-endpoint) | 1, 2 |
 | 5 | [RDS primary + read replica](#5-rds-primary--read-replica) | 1, 3, 4 |
 | 6 | [Cognito user pool](#6-cognito-user-pool) | — |
 | 7 | [IAM role for the instances](#7-iam-role-for-the-instances) | 4 |
 | 8 | [ACM certificate](#8-acm-certificate) | domain |
-| 9 | [Launch template](#9-launch-template) | 3, 7 |
+| 9 | [Launch template](#9-launch-template) | 3, 4b, 7 |
 | 10 | [Target group](#10-target-group) | 1 |
 | 11 | [Application Load Balancer](#11-application-load-balancer) | 1, 3, 8, 10 |
 | 12 | [Auto Scaling group](#12-auto-scaling-group) | 9, 10 |
@@ -215,6 +221,68 @@ fill in the `TBD`s in steps 5 and 6.
 
 Secret name **`letsvote/app-config`**. Disable rotation. Copy the secret
 **ARN** — step 7 needs it.
+
+## 4b. S3 artifact bucket and gateway endpoint
+
+The instances install the application from a **versioned zip in S3**, not from
+a `git clone` — see the discussion in [step 9](#9-launch-template) for why.
+
+### Create the bucket
+
+S3 → *Create bucket*, **in us-east-2**:
+
+- **Bucket name**: `letsvote-artifacts-860977520909` — bucket names are
+  globally unique across all of AWS, so the account number is a cheap way to
+  guarantee one that is free
+- **Block all public access**: **ON** (the default). Nothing here is public;
+  the instances read it with their IAM role
+- **Bucket versioning**: **Enable**. Belt and braces — the filename already
+  carries the version, but this makes an accidental overwrite recoverable
+- Leave encryption at the default (SSE-S3)
+
+### Build and upload the artifact
+
+On your machine, from the repository:
+
+```bash
+./deploy/package.sh 1.0.0
+# -> dist/letsvote-1.0.0.zip
+```
+
+The script excludes `.git` and any real `config*.ini`, then refuses to produce
+a zip that contains one — the database password and Cognito client secret live
+in Secrets Manager and must never travel in the artifact.
+
+Upload `dist/letsvote-1.0.0.zip` to the bucket under the key:
+
+```
+letsvote/letsvote-1.0.0.zip
+```
+
+In the console: open the bucket → *Create folder* `letsvote` → *Upload*. (Or
+`aws s3 cp dist/letsvote-1.0.0.zip s3://letsvote-artifacts-860977520909/letsvote/`
+if you prefer the CLI.)
+
+### Add the S3 gateway VPC endpoint
+
+VPC → *Endpoints* → *Create endpoint*:
+
+- **Service category**: AWS services
+- **Service name**: `com.amazonaws.us-east-2.s3` — pick the one of **Type:
+  Gateway**, not Interface
+- **VPC**: `letsvote-vpc`
+- **Route tables**: tick **`webapp-rt`**
+- **Policy**: Full access is fine for class
+
+**Gateway endpoints are free.** This one is worth the two minutes for what it
+demonstrates: after this, the instances' S3 traffic never leaves the AWS
+network. It does not traverse the NAT gateway, so it incurs no NAT data
+processing charge, and a deploy no longer depends on anything outside the VPC.
+Creating the endpoint adds a route to `webapp-rt` automatically — you will see
+a new entry with an `pl-` prefix list destination.
+
+The NAT gateway is still required, for Cognito's token endpoint and `dnf`. But
+this is a concrete demonstration that architecture choices show up on the bill.
 
 ## 5. RDS primary + read replica
 
@@ -658,16 +726,41 @@ Add an inline policy `read-letsvote-secret`:
 ```json
 {
   "Version": "2012-10-17",
-  "Statement": [{
-    "Effect": "Allow",
-    "Action": "secretsmanager:GetSecretValue",
-    "Resource": "arn:aws:secretsmanager:us-east-2:860977520909:secret:letsvote/app-config-*"
-  }]
+  "Statement": [
+    {
+      "Sid": "ReadTheConfigSecret",
+      "Effect": "Allow",
+      "Action": "secretsmanager:GetSecretValue",
+      "Resource": "arn:aws:secretsmanager:us-east-2:860977520909:secret:letsvote/app-config-*"
+    },
+    {
+      "Sid": "ReadTheApplicationArtifact",
+      "Effect": "Allow",
+      "Action": "s3:GetObject",
+      "Resource": "arn:aws:s3:::letsvote-artifacts-860977520909/letsvote/*"
+    }
+  ]
 }
 ```
 
-The `-*` is required: Secrets Manager appends six random characters to every
-secret ARN.
+The `-*` on the secret is required: Secrets Manager appends six random
+characters to every secret ARN.
+
+The S3 statement is what lets the instances install the application in
+[step 4b](#4b-s3-artifact-bucket-and-gateway-endpoint). Two things about it
+worth pointing out to the class:
+
+- It grants **`s3:GetObject` only**, on **one key prefix**. The instances can
+  read the artifact and nothing else — not list the bucket, not write to it,
+  not touch another bucket. If someone gets a shell on an instance, this is the
+  entire extent of its S3 access.
+- The resource is `arn:aws:s3:::bucket/letsvote/*` — the object path, **with no
+  Region or account number**, because S3 bucket names are globally unique. This
+  trips people up right after writing the Secrets Manager ARN, which has both.
+
+If you use `aws s3 sync` instead of `aws s3 cp`, you also need `s3:ListBucket`
+on `arn:aws:s3:::letsvote-artifacts-860977520909`. The boot script uses `cp`, so
+you do not.
 
 Role name: `letsvote-ec2-role`.
 
@@ -728,48 +821,60 @@ EC2 → *Launch templates* → *Create*.
 
   | Variable | Value |
   |---|---|
-  | `APP_REPO` | `https://github.com/jayakuma998/letsvote.git` |
+  | `APP_BUCKET` | `letsvote-artifacts-860977520909` |
+  | `APP_VERSION` | `1.0.0` |
   | `SECRET_ID` | `letsvote/app-config` |
   | `AWS_REGION` | `us-east-2` |
   | `BASE_URL` | `https://letsvotes.com` |
 
-The repository must be **public**, because the boot script clones it over
-HTTPS with no credentials — an SSH remote you can push to is not enough. If you
-keep it private instead, upload a zip to S3, grant the role `s3:GetObject` on
-it, and use the alternative command already commented into the script.
+  **`APP_VERSION` is the deployment control.** It selects
+  `letsvote/letsvote-<version>.zip` from the bucket, so every instance in the
+  fleet runs byte-identical code regardless of when it launched.
 
-> ### Cloning a public repo at boot is a teaching shortcut, not a pattern
-> Say this to the class explicitly, because otherwise they will copy it. Four
-> things are wrong with `git clone` in user data:
+### How you deploy a change
+
+This is the part worth rehearsing before class, because it is the question
+students ask as soon as the site works:
+
+1. `./deploy/package.sh 1.0.1`
+2. Upload `dist/letsvote-1.0.1.zip` to `letsvote/letsvote-1.0.1.zip`
+3. Edit the launch template → *Modify template (Create new version)* → change
+   `APP_VERSION` to `1.0.1` → save
+4. Auto Scaling group → *Instance refresh* → *Start instance refresh*
+
+The ASG replaces instances a batch at a time, waiting for each to pass the
+target group health check before moving on. **A rollback is the same four steps
+with `1.0.0`** — no git revert, no race against whatever launches next.
+
+Make sure the ASG's launch template version is **Latest** (set in
+[step 12](#12-auto-scaling-group)) or step 3 will have no effect.
+
+> ### Why an S3 artifact instead of `git clone`
+> Earlier drafts of this runbook cloned a public GitHub repository in user
+> data. It is worth explaining to the class why that was replaced, because it
+> is a tempting shortcut:
 >
-> - **Boot depends on a third party.** If GitHub is unreachable, instances
+> - **Boot depended on a third party.** If GitHub is unreachable, instances
 >   cannot launch — and that bites hardest during an AZ failure or a scale-out,
 >   exactly when you are launching instances.
-> - **Nothing is pinned.** `--depth 1` of the default branch means two
->   instances launched ten minutes apart can run different code, a bad push
+> - **Nothing was pinned.** `git clone --depth 1` of the default branch means
+>   two instances launched ten minutes apart can run different code, a bad push
 >   reaches every new instance immediately, and there is no rollback.
-> - **Supply chain.** Whoever compromises that repository gets root on every
+> - **Supply chain.** Whoever compromises the repository gets root on every
 >   instance, unsigned and undetected.
-> - **Every instance repeats the work**, which is why
->   [step 12](#12-auto-scaling-group) needs a 300-second health check grace
->   period.
+> - **It needed the NAT gateway**, and therefore the internet, for something
+>   that is entirely internal.
 >
-> What production does instead, in rough order of preference:
+> The S3 artifact fixes all four: the version is explicit, the bucket is
+> private, access is one `s3:GetObject` on one prefix, and the
+> [gateway endpoint](#4b-s3-artifact-bucket-and-gateway-endpoint) keeps the
+> traffic off the internet entirely.
 >
-> | Approach | Why it is better |
-> |---|---|
-> | **Bake an AMI** (Packer, EC2 Image Builder) | app and packages preinstalled; the launch template pins an AMI ID, so a rollback is pointing at the previous one |
-> | **Versioned artifact in S3** | pin an object version, fetch it with the instance role, and with an **S3 gateway VPC endpoint** the deploy never touches the internet at all |
-> | **Container image in ECR** | digest-pinned and immutable, but a different architecture from this diagram |
->
-> The S3 route is the smallest change from here — the command is already
-> commented into `deploy/userdata.sh`, and it only needs `s3:GetObject` added
-> to `letsvote-ec2-role`. **Turning this build into an S3-artifact deploy is a
-> good follow-up exercise.**
->
-> The clone earns its place here for exactly one reason: students can read
-> every line of the running application on GitHub, with no build step between
-> them and the instance.
+> **The next step up is baking an AMI** with Packer or EC2 Image Builder, so
+> instances boot with Apache, PHP and the application already installed. That
+> removes the package installs too, cutting boot time and the health check
+> grace period. It needs a build pipeline, which is why this runbook stops
+> here — but it is the natural follow-up exercise.
 
 AL2023 ships PHP 8.1–8.5; the script installs the default `php` package and
 then **hard-fails the boot if PHP is older than 8.1**, so a bad AMI shows up
@@ -1008,6 +1113,9 @@ Check *Billing → Bills* the next day for anything still accruing.
 | Symptom | Cause | Fix |
 |---|---|---|
 | Targets stuck **unhealthy** | user data failed | Session Manager in, read `/var/log/cloud-init-output.log`, then `curl localhost/health.php` |
+| Boot log shows `fatal error: An error occurred (403) ... HeadObject` | the instance role can't read the artifact | Check the `s3:GetObject` statement in [step 7](#7-iam-role-for-the-instances). The resource is `arn:aws:s3:::bucket/letsvote/*` — no Region, no account number, and the `/letsvote/*` prefix must match the key you uploaded |
+| Boot log shows `404` or `Not Found` on the S3 copy | `APP_VERSION` doesn't match an uploaded object | The key is `letsvote/letsvote-<APP_VERSION>.zip`. List the bucket and compare character for character; `1.0` and `1.0.0` are different objects |
+| `artifact ... did not contain public/health.php` | the zip was built from the wrong directory | Rebuild with `./deploy/package.sh <version>` from the repository root — the zip must have `public/` at its top level, not nested inside a folder |
 | **Create read replica** greyed out | backup retention is 0 | Modify `database-1`, set backup retention ≥ 1 day, apply, then retry |
 | `502 Bad Gateway` from CloudFront | origin certificate mismatch | Origin must be `origin.letsvotes.com` and that name must be on the ACM certificate |
 | `503` from the ALB | no healthy targets | Check the target group; `letsvote-webapp-sg` must allow 80 **from `letsvote-lb-sg`** |
