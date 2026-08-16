@@ -426,17 +426,41 @@ secret*) into the Secrets Manager secret.
 
 ### 6d. Create the managed login domain
 
-**The creation flow already made one for you.** Open the pool → **Domain** and
-you will find a Cognito domain with a machine-generated prefix derived from the
-pool ID, for example:
+The **Domain** page offers two kinds, and this runbook uses the first:
+
+| | What it is | Needed here? |
+|---|---|---|
+| **Cognito domain** | a service-owned prefix on `amazoncognito.com` | **yes** — this is the one |
+| **Custom domain** | your own DNS name (e.g. `auth.letsvotes.com`) plus its own ACM certificate | no — leave it blank |
+
+**The creation flow already made the Cognito domain for you.** It has a
+machine-generated prefix derived from the pool ID, for example:
 
 ```
 https://us-east-21lectpe5u.auth.us-east-2.amazoncognito.com
 ```
 
-That works perfectly well — it is a real managed login domain and the app does
-not care what the prefix says. But it is the URL your students stare at on the
-sign-in page, and it is not memorable or typeable.
+That is a complete, working managed login domain — the application does not
+care what the prefix says. The only drawback is that it is the URL your
+students stare at on the sign-in page, and it is neither memorable nor
+typeable.
+
+> ### Strip the `https://` before putting this in the secret
+> The console shows the domain **with** a scheme. `cognito_domain` must be the
+> **hostname only**, because `Cognito::hostedUiBase()` adds the scheme itself:
+>
+> ```php
+> return 'https://' . rtrim(Config::mustGet('cognito.domain'), '/');
+> ```
+>
+> Paste the console value verbatim and every Cognito URL becomes
+> `https://https://…`, so sign-in fails before the user ever sees a login page.
+>
+> | | |
+> |---|---|
+> | ✅ correct | `us-east-21lectpe5u.auth.us-east-2.amazoncognito.com` |
+> | ❌ wrong | `https://us-east-21lectpe5u.auth.us-east-2.amazoncognito.com` |
+> | ❌ wrong | `us-east-21lectpe5u.auth.us-east-2.amazoncognito.com/` |
 
 **If you want `letsvote-auth` instead, change it now**, before anything depends
 on it: *Delete* the generated domain, then *Create Cognito domain* with the
