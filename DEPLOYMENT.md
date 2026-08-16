@@ -358,11 +358,52 @@ choose **Go to overview**.
 with `us-east-2_`. If it starts with `us-east-1_`, the pool is in the wrong
 Region — delete it and redo 6a.
 
-### 6b. Finish the app client settings
+### 6b. Trim the authentication flows
 
-The quick-create flow sets defaults it never asked you about, and two of them
-are wrong for this app. In the pool → **App clients** → `letsvote-web` → edit
-the **Login pages** / **Hosted UI** settings:
+Pool → **App clients** → `letsvote-web` → **Edit app client information**.
+
+The console pre-populates **Authentication flows** based on the application
+type. Those flows are for *API-based* sign-in, where your server or SDK handles
+credentials directly (`InitiateAuth` / `AdminInitiateAuth`). **This app uses
+none of them.** It redirects the browser to managed login and exchanges an
+authorization code at the token endpoint, so the user's password never touches
+the application.
+
+Untick all of these:
+
+| Flow | Why not |
+|---|---|
+| `ALLOW_USER_AUTH` (choice-based) | managed login handles the choice |
+| `ALLOW_USER_PASSWORD_AUTH` | sends passwords through the app — the thing we are avoiding |
+| `ALLOW_USER_SRP_AUTH` | needs client-side SRP libraries this app doesn't use |
+| `ALLOW_ADMIN_USER_PASSWORD_AUTH` | server-side password auth; not supported in hosted UI anyway |
+| `ALLOW_CUSTOM_AUTH` | needs Lambda triggers we don't have |
+
+Leave **`ALLOW_REFRESH_TOKEN_AUTH`** alone — the console notes refresh token
+authentication is always enabled. The app doesn't use refresh tokens either
+(`callback.php` verifies the ID token and immediately creates its own
+database-backed session), but there is nothing to gain by fighting it.
+
+Every flow you leave ticked is an additional way to authenticate against your
+user pool that the application itself never uses. This is a good five-minute
+discussion with the class about attack surface.
+
+**The other settings on this page are fine as they come**, with one exception:
+
+- **Prevent user existence errors**: **enable it.** Cognito then returns the
+  same generic failure whether or not the account exists, instead of confirming
+  which email addresses are registered. On a voting app, a list of registered
+  voters is exactly what you don't want to leak.
+- **Token expiration** — ID and access tokens at 60 minutes, refresh at 5 days,
+  are fine. The app stops caring the moment it mints its own session.
+- **Enable token revocation** / **refresh token rotation** — no effect here,
+  since the app holds no refresh token.
+
+### 6c. Set the callback and sign-out URLs
+
+**These are not on the "App client information" page.** In the same app client,
+open the **Login pages** tab (called **Hosted UI** in some console versions) and
+choose **Edit** on the managed login pages configuration:
 
 | Setting | Required value |
 |---|---|
@@ -383,7 +424,7 @@ Cognito permits plain `http` only for `localhost`.
 Then copy the **Client ID** and **Client secret** (revealed with *Show client
 secret*) into the Secrets Manager secret.
 
-### 6c. Create the managed login domain
+### 6d. Create the managed login domain
 
 In the pool → **Domain** (or *App integration* → *Domain*) → *Create Cognito
 domain* → prefix `letsvote-auth`. Result:
@@ -402,7 +443,7 @@ domain* → prefix `letsvote-auth`. Result:
   console rejects it as unavailable, add a suffix (`letsvote-auth-2`) and use
   the result consistently everywhere below.
 
-### 6d. Sign-up and verification settings
+### 6e. Sign-up and verification settings
 
 These are no longer part of creation. Confirm them in the pool's settings tabs
 (**Sign-up**, **Sign-in**, **Messaging**):
@@ -424,7 +465,7 @@ change it in the pool's settings. Keep Essentials: 10,000 MAU are free, and
 *managed login* requires Essentials or Plus. **Lite** is also fine and slightly
 cheaper past the free tier, but gives you the classic hosted UI only.
 
-### 6e. Record the values
+### 6f. Record the values
 
 Copy into the Secrets Manager secret from [step 4](#4-secrets-manager) — the one
 in **us-east-2**, since that is the Region the instances read it from:
