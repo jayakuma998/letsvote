@@ -462,6 +462,42 @@ typeable.
 > | ❌ wrong | `https://us-east-21lectpe5u.auth.us-east-2.amazoncognito.com` |
 > | ❌ wrong | `us-east-21lectpe5u.auth.us-east-2.amazoncognito.com/` |
 
+#### Optional: a custom domain such as `auth.letsvotes.com`
+
+Not required, and this runbook does not use one — the prefix domain above does
+everything the application needs. Consider it only if you want the sign-in page
+to show your own name. If you skip it, nothing else changes.
+
+If you do want it, the requirements are easy to get wrong:
+
+- **The ACM certificate must be in us-east-1**, whatever Region your user pool
+  is in. Cognito puts a CloudFront distribution in front of a custom domain,
+  and CloudFront only accepts us-east-1 certificates — the same reason
+  [step 8](#8-acm-certificate) needs Cert B there. A us-east-2 certificate will
+  not appear in the picker.
+- **The parent domain must already resolve.** Cognito refuses to create
+  `auth.letsvotes.com` unless `letsvotes.com` has a real **A record** — any
+  value will do, and an SOA record does not count. This runbook does not create
+  that record until [step 15](#15-route-53), so a custom domain has to wait
+  until after it. This check exists to stop accidental hijacking of a
+  production domain.
+- **It must be a subdomain.** Cognito rejects top-level domains, so
+  `letsvotes.com` itself cannot be the custom domain.
+- You then add an **A – Alias** record pointing at the CloudFront alias target
+  Cognito hands you, and your IAM principal needs `cloudfront:UpdateDistribution`.
+- With managed login, the minimum TLS version must be `TLS_V1_2_2021` or higher.
+
+> **Decide before you create Cert B.** ACM certificates are immutable — you
+> cannot add a name to one later. If there is any chance you will want
+> `auth.letsvotes.com`, add it as a fourth name on **Cert B** in
+> [step 8](#8-acm-certificate) now, rather than requesting a separate
+> certificate afterwards.
+
+Switching to a custom domain later is safe for the application: only
+`cognito_domain` in the secret changes. The issuer and JWKS URLs come from
+`cognito-idp.us-east-2.amazonaws.com`, not from the login domain, so token
+verification is unaffected.
+
 **If you want `letsvote-auth` instead, change it now**, before anything depends
 on it: *Delete* the generated domain, then *Create Cognito domain* with the
 prefix below. Once the value is in Secrets Manager and instances are running,
@@ -646,6 +682,13 @@ serve both.
 |---|---|---|---|
 | **Cert A** | **us-east-2** (Ohio) | `origin.letsvotes.com` | the ALB, [step 11](#11-application-load-balancer) |
 | **Cert B** | **us-east-1** (N. Virginia) | `letsvotes.com`, `www.letsvotes.com` | CloudFront, [step 14](#14-cloudfront) |
+
+> **Adding a Cognito custom domain later?** Put `auth.letsvotes.com` on **Cert
+> B** now as a fourth name. ACM certificates are immutable, so a name you leave
+> off means requesting a whole new certificate. A Cognito custom domain also
+> needs its certificate in us-east-1 — see
+> [6d](#6d-create-the-managed-login-domain). Skip this if you are happy with
+> the `amazoncognito.com` prefix domain, which is what this runbook uses.
 
 For each one: Certificate Manager → **check the Region selector in the console
 top-right before you click anything** → *Request* → **Public certificate** →
