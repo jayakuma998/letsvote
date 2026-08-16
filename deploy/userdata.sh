@@ -15,10 +15,10 @@ set -euxo pipefail
 # ---------------------------------------------------------------------------
 # 1. Things you must change
 # ---------------------------------------------------------------------------
-APP_REPO="https://github.com/YOUR-ORG/letsvote-app.git"   # or use the S3 method below
+APP_REPO="https://github.com/jayakuma998/letsvote.git"    # or use the S3 method below
 SECRET_ID="letsvote/app-config"                           # AWS Secrets Manager secret name
 AWS_REGION="us-east-1"
-BASE_URL="https://letsvote.example"                       # your real domain, no trailing slash
+BASE_URL="https://letsvotes.com"                          # your real domain, no trailing slash
 
 APP_DIR="/var/www/letsvote"
 
