@@ -738,6 +738,39 @@ HTTPS with no credentials — an SSH remote you can push to is not enough. If yo
 keep it private instead, upload a zip to S3, grant the role `s3:GetObject` on
 it, and use the alternative command already commented into the script.
 
+> ### Cloning a public repo at boot is a teaching shortcut, not a pattern
+> Say this to the class explicitly, because otherwise they will copy it. Four
+> things are wrong with `git clone` in user data:
+>
+> - **Boot depends on a third party.** If GitHub is unreachable, instances
+>   cannot launch — and that bites hardest during an AZ failure or a scale-out,
+>   exactly when you are launching instances.
+> - **Nothing is pinned.** `--depth 1` of the default branch means two
+>   instances launched ten minutes apart can run different code, a bad push
+>   reaches every new instance immediately, and there is no rollback.
+> - **Supply chain.** Whoever compromises that repository gets root on every
+>   instance, unsigned and undetected.
+> - **Every instance repeats the work**, which is why
+>   [step 12](#12-auto-scaling-group) needs a 300-second health check grace
+>   period.
+>
+> What production does instead, in rough order of preference:
+>
+> | Approach | Why it is better |
+> |---|---|
+> | **Bake an AMI** (Packer, EC2 Image Builder) | app and packages preinstalled; the launch template pins an AMI ID, so a rollback is pointing at the previous one |
+> | **Versioned artifact in S3** | pin an object version, fetch it with the instance role, and with an **S3 gateway VPC endpoint** the deploy never touches the internet at all |
+> | **Container image in ECR** | digest-pinned and immutable, but a different architecture from this diagram |
+>
+> The S3 route is the smallest change from here — the command is already
+> commented into `deploy/userdata.sh`, and it only needs `s3:GetObject` added
+> to `letsvote-ec2-role`. **Turning this build into an S3-artifact deploy is a
+> good follow-up exercise.**
+>
+> The clone earns its place here for exactly one reason: students can read
+> every line of the running application on GitHub, with no build step between
+> them and the instance.
+
 AL2023 ships PHP 8.1–8.5; the script installs the default `php` package and
 then **hard-fails the boot if PHP is older than 8.1**, so a bad AMI shows up
 immediately instead of as random 500s.
