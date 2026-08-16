@@ -426,13 +426,26 @@ secret*) into the Secrets Manager secret.
 
 ### 6d. Create the managed login domain
 
+**Check whether you already have one.** The new creation flow can assign a
+domain while creating the pool, so open the pool → **Domain** first. If a domain
+is already listed, you only need to confirm the prefix is one you want; skip to
+6e. If not, create it here.
+
 In the pool → **Domain** (or *App integration* → *Domain*) → *Create Cognito
 domain* → prefix `letsvote-auth`. Result:
 `letsvote-auth.auth.us-east-2.amazoncognito.com`.
 
-- **Branding version**: **Managed login** or **Hosted UI (classic)** —
-  **either works with this app.** AWS documents that all endpoint paths except
-  `/passkeys/add` are shared between the two branding versions.
+- **Branding version**: **new user pools default to Managed login**, and that
+  is the right choice — keep it. **Hosted UI (classic)** also works: AWS
+  documents that all endpoint paths except `/passkeys/add` are shared between
+  the two branding versions, and this app uses none of the differences. Classic
+  is the *only* option on the **Lite** feature plan.
+- The branding version is a property of **the domain, not the app client**, and
+  applies to every app client using that domain.
+- Switching branding version later takes up to four minutes, and **Amazon
+  Cognito does not preserve user sessions across the switch** — everyone signed
+  in has to sign in again. Harmless in class, worth knowing before you flip it
+  during a demo.
 - You can't use `aws`, `amazon`, or `cognito` in the prefix.
 - A prefix domain takes up to 60 seconds to come up.
 - The `us-east-2` in the resulting hostname is not something you choose — it
@@ -464,6 +477,22 @@ longer a creation-wizard question — new pools default to **Essentials** and yo
 change it in the pool's settings. Keep Essentials: 10,000 MAU are free, and
 *managed login* requires Essentials or Plus. **Lite** is also fine and slightly
 cheaper past the free tier, but gives you the classic hosted UI only.
+
+> ### Two managed-login behaviours that look like bugs
+> Both are worth mentioning before the class hits them and assumes the app is
+> broken:
+>
+> - **Sign-in requests expire after five minutes.** Leave the login page open
+>   too long and Cognito cancels the request and shows `Something went wrong`.
+>   Starting again from `/login.php` fixes it.
+> - **The browser keeps a one-hour session cookie.** After signing in, users
+>   are silently signed back in for an hour without a prompt — which makes
+>   "sign out and try again" demos confusing. Use a private window when
+>   demonstrating sign-in, and note that the cookie's hour does **not** reset
+>   on each use.
+>
+> Managed login also requires **TLS 1.2**, which CloudFront and the ALB both
+> satisfy with the settings in this runbook.
 
 ### 6f. Record the values
 
