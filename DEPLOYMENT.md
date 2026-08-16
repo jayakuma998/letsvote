@@ -426,10 +426,30 @@ secret*) into the Secrets Manager secret.
 
 ### 6d. Create the managed login domain
 
-**Check whether you already have one.** The new creation flow can assign a
-domain while creating the pool, so open the pool → **Domain** first. If a domain
-is already listed, you only need to confirm the prefix is one you want; skip to
-6e. If not, create it here.
+**The creation flow already made one for you.** Open the pool → **Domain** and
+you will find a Cognito domain with a machine-generated prefix derived from the
+pool ID, for example:
+
+```
+https://us-east-21lectpe5u.auth.us-east-2.amazoncognito.com
+```
+
+That works perfectly well — it is a real managed login domain and the app does
+not care what the prefix says. But it is the URL your students stare at on the
+sign-in page, and it is not memorable or typeable.
+
+**If you want `letsvote-auth` instead, change it now**, before anything depends
+on it: *Delete* the generated domain, then *Create Cognito domain* with the
+prefix below. Once the value is in Secrets Manager and instances are running,
+changing it means editing the secret and rebooting every instance. Deleting a
+domain takes the sign-in pages offline for a minute, which is free right now
+and disruptive later.
+
+Also note the pool itself is named something like **`User pool - 4vkocv`** —
+the creation flow named your *application* `letsvote-web` but auto-named the
+*pool*. Rename it to `letsvote-users` under **Settings** if you want the console
+to be readable in class. Unlike most Cognito settings, the pool name **can** now
+be changed after creation.
 
 In the pool → **Domain** (or *App integration* → *Domain*) → *Create Cognito
 domain* → prefix `letsvote-auth`. Result:
@@ -446,6 +466,27 @@ domain* → prefix `letsvote-auth`. Result:
   Cognito does not preserve user sessions across the switch** — everyone signed
   in has to sign in again. Harmless in class, worth knowing before you flip it
   during a demo.
+
+> ### Leave "Issuer type" set to Original
+> Further down the same **Domain** page is an **Issuer** setting with two
+> values, and this one will break the application if you change it:
+>
+> | Issuer type | `iss` claim in tokens |
+> |---|---|
+> | **Original** ← keep this | `https://cognito-idp.us-east-2.amazonaws.com/us-east-2_XXXXXXXXX` |
+> | Updated | `https://issuer-cognito-idp.us-east-2.amazonaws.com/us-east-2_XXXXXXXXX` |
+>
+> `src/Cognito.php` builds the **Original** form in `issuer()` and compares it
+> to the token's `iss` claim with a strict `!==`. Switch to *Updated* and every
+> sign-in dies at `ID token issuer mismatch` — after a successful Cognito
+> login, which makes it look like the app is at fault rather than a setting
+> nobody touched on purpose.
+>
+> **AWS recommends *Updated* for all user pools**, so this is a plausible thing
+> for a helpful student to change. It also isn't compatible with ALB
+> authentication or API Gateway Cognito authorizers. If you ever do want it,
+> change `issuer()` in `src/Cognito.php` to match — don't change one without
+> the other.
 - You can't use `aws`, `amazon`, or `cognito` in the prefix.
 - A prefix domain takes up to 60 seconds to come up.
 - The `us-east-2` in the resulting hostname is not something you choose — it
@@ -879,6 +920,8 @@ Check *Billing → Bills* the next day for anything still accruing.
 | No certificate to choose in the ALB listener dropdown ([step 11](#11-application-load-balancer)) | the certificate was requested in us-east-1 | An ALB only lists certificates from its own Region. Request **Cert A** again in **us-east-2** ([step 8](#8-acm-certificate)) |
 | CloudFront rejects your certificate ([step 14](#14-cloudfront)) | the certificate is in us-east-2 | CloudFront accepts custom certificates only from **us-east-1**. That is **Cert B**, and it is a different certificate from the ALB's |
 | Sign-in fails after a correct-looking Cognito setup | pool Region and `AWS_REGION` disagree | The pool ID must start `us-east-2_` and `AWS_REGION` in the user data must be `us-east-2`. `AWS_REGION` sets the token issuer `src/Jwt.php` validates, so a mismatch fails verification even though every URL looks right |
+| `ID token issuer mismatch` after a successful Cognito login | user pool **Issuer type** was switched to *Updated* | Set it back to **Original** on the pool's *Domain* page. *Updated* issues `iss` as `issuer-cognito-idp.…`, which `Cognito::issuer()` does not build. See [step 6d](#6d-create-the-managed-login-domain) |
+| `redirect_mismatch` although the callback URL looks right | the domain prefix in the secret isn't the one the pool actually has | The console auto-creates a domain with a generated prefix. Compare `cognito_domain` in Secrets Manager against the pool's *Domain* page character for character |
 | `SQLSTATE[HY000] [2002]` | can't reach RDS | `letsvote-db-sg` must allow 3306 from `letsvote-webapp-sg`; RDS must use `letsvote-subnet-group` |
 | WAF blocks your own class | rules went straight to Block | Set the rule group to **Count**, review sampled requests, re-enable gradually |
 | `origin.letsvotes.com` serves the site instead of `403` | step 16 not done, or the header value doesn't match | Compare the CloudFront origin custom header with the ALB listener rule condition, character for character |
