@@ -55,10 +55,18 @@ $leader = $tally[0] ?? null;
     <h2>National tally</h2>
     <ol class="tally">
         <?php foreach ($tally as $row): ?>
-            <li class="tally-row">
+            <li class="tally-row <?= e(candidate_party_class($row['party_abbr'] ?? '')) ?>">
                 <div class="tally-head">
+                    <?php if (($row['photo'] ?? '') !== ''): ?>
+                        <img class="avatar avatar-xs" src="<?= e($row['photo']) ?>" width="40" height="40" alt="">
+                    <?php endif; ?>
                     <span class="tally-name"><?= e($row['full_name']) ?></span>
-                    <span class="tally-party"><?= e($row['party']) ?></span>
+                    <span class="tally-party">
+                        <?php if (($row['party_abbr'] ?? '') !== ''): ?>
+                            <span class="party-tag"><?= e($row['party_abbr']) ?></span>
+                        <?php endif; ?>
+                        <?= e($row['party']) ?>
+                    </span>
                     <span class="tally-figure">
                         <strong><?= e((string) $row['percent']) ?>%</strong>
                         <span class="tally-count"><?= number_format($row['votes']) ?> votes</span>

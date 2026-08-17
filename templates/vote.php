@@ -29,15 +29,27 @@
             <legend>Choose one candidate</legend>
 
             <?php foreach ($candidates as $candidate): ?>
-                <label class="ballot-option">
+                <?php $party = candidate_party_class($candidate['party_abbr'] ?? ''); ?>
+                <label class="ballot-option <?= e($party) ?>">
                     <input type="radio" name="candidate_id" value="<?= (int) $candidate['id'] ?>" required>
+                    <?php if (($candidate['photo'] ?? '') !== ''): ?>
+                        <img class="avatar avatar-sm" src="<?= e($candidate['photo']) ?>" width="56" height="56" alt="">
+                    <?php else: ?>
+                        <span class="avatar avatar-sm avatar-fallback" aria-hidden="true"><?= e(candidate_initials($candidate['full_name'])) ?></span>
+                    <?php endif; ?>
                     <span class="ballot-body">
                         <span class="ballot-name"><?= e($candidate['full_name']) ?></span>
-                        <span class="ballot-party"><?= e($candidate['party']) ?></span>
+                        <span class="ballot-party">
+                            <?php if (($candidate['party_abbr'] ?? '') !== ''): ?>
+                                <span class="party-tag"><?= e($candidate['party_abbr']) ?></span>
+                            <?php endif; ?>
+                            <span class="party-name"><?= e($candidate['party']) ?></span>
+                        </span>
                         <?php if ($candidate['slogan'] !== ''): ?>
                             <span class="ballot-slogan">“<?= e($candidate['slogan']) ?>”</span>
                         <?php endif; ?>
                     </span>
+                    <span class="ballot-check" aria-hidden="true"></span>
                 </label>
             <?php endforeach; ?>
         </fieldset>

@@ -67,9 +67,25 @@
     <?php else: ?>
         <div class="card-grid">
             <?php foreach ($candidates as $candidate): ?>
-                <article class="card">
-                    <h3><?= e($candidate['full_name']) ?></h3>
-                    <p class="party"><?= e($candidate['party']) ?></p>
+                <?php $party = candidate_party_class($candidate['party_abbr'] ?? ''); ?>
+                <article class="card candidate-card <?= e($party) ?>">
+                    <div class="candidate-head">
+                        <?php if (($candidate['photo'] ?? '') !== ''): ?>
+                            <img class="avatar" src="<?= e($candidate['photo']) ?>" width="72" height="72"
+                                 alt="Illustrated portrait of <?= e($candidate['full_name']) ?>">
+                        <?php else: ?>
+                            <span class="avatar avatar-fallback" aria-hidden="true"><?= e(candidate_initials($candidate['full_name'])) ?></span>
+                        <?php endif; ?>
+                        <div class="candidate-id">
+                            <h3><?= e($candidate['full_name']) ?></h3>
+                            <p class="party">
+                                <?php if (($candidate['party_abbr'] ?? '') !== ''): ?>
+                                    <span class="party-tag"><?= e($candidate['party_abbr']) ?></span>
+                                <?php endif; ?>
+                                <span class="party-name"><?= e($candidate['party']) ?></span>
+                            </p>
+                        </div>
+                    </div>
                     <?php if ($candidate['slogan'] !== ''): ?>
                         <p class="slogan">“<?= e($candidate['slogan']) ?>”</p>
                     <?php endif; ?>
@@ -77,5 +93,9 @@
                 </article>
             <?php endforeach; ?>
         </div>
+        <p class="hint">
+            Portraits are illustrated initials, not photographs. Biographies are
+            limited to offices held.
+        </p>
     <?php endif; ?>
 </section>

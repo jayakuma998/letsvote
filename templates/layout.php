@@ -18,6 +18,23 @@
 <body>
 <a class="skip-link" href="#main">Skip to content</a>
 
+<!--
+    This banner is not decoration. The site carries the names of real public
+    figures on a public domain with open sign-up, so every page has to say
+    plainly what it is. Do not remove it.
+-->
+<div class="demo-banner" role="note">
+    <div class="container demo-banner-inner">
+        <span class="demo-badge">Demo</span>
+        <p>
+            <strong>This is a classroom exercise, not a real election.</strong>
+            Votes cast here count for nothing, the result is not a poll or a
+            prediction, and this site is not affiliated with INEC, any political
+            party, or any candidate named on it.
+        </p>
+    </div>
+</div>
+
 <header class="site-header">
     <div class="container header-inner">
         <a class="brand" href="/">
@@ -65,6 +82,13 @@
             LetsVote — a classroom project demonstrating a highly available web
             application on AWS. Not affiliated with any electoral authority, and
             not a real election.
+        </p>
+        <p>
+            Candidates are real public figures, included so the exercise
+            resembles something recognisable. Portraits are illustrated
+            initials, not photographs, and the biographies are limited to
+            offices held. Nothing here should be read as a statement by or
+            about any candidate.
         </p>
         <p class="served-by">
             Served by <code><?= e(gethostname()) ?></code>

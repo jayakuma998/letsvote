@@ -100,7 +100,7 @@ final class Election
     public static function candidates(): array
     {
         return Db::read()->query(
-            'SELECT id, full_name, party, slogan, bio
+            'SELECT id, full_name, party, party_abbr, slogan, bio, photo, accent
                FROM candidates
               WHERE is_active = 1
            ORDER BY sort_order, full_name'
@@ -188,16 +188,17 @@ final class Election
      * National tally — served by the read replica, which is what keeps a
      * results-page traffic spike off the primary that is still taking votes.
      *
-     * @return array<int,array{id:int,full_name:string,party:string,votes:int,percent:float}>
+     * @return array<int,array{id:int,full_name:string,party:string,party_abbr:string,photo:string,accent:string,votes:int,percent:float}>
      */
     public static function tally(): array
     {
         $rows = Db::read()->query(
-            'SELECT c.id, c.full_name, c.party, COUNT(b.id) AS votes
+            'SELECT c.id, c.full_name, c.party, c.party_abbr, c.photo, c.accent,
+                    COUNT(b.id) AS votes
                FROM candidates c
           LEFT JOIN ballots b ON b.candidate_id = c.id
               WHERE c.is_active = 1
-           GROUP BY c.id, c.full_name, c.party
+           GROUP BY c.id, c.full_name, c.party, c.party_abbr, c.photo, c.accent
            ORDER BY votes DESC, c.full_name'
         )->fetchAll();
 
@@ -207,11 +208,14 @@ final class Election
             $votes = (int) $r['votes'];
 
             return [
-                'id'        => (int) $r['id'],
-                'full_name' => (string) $r['full_name'],
-                'party'     => (string) $r['party'],
-                'votes'     => $votes,
-                'percent'   => $total > 0 ? round($votes * 100 / $total, 2) : 0.0,
+                'id'         => (int) $r['id'],
+                'full_name'  => (string) $r['full_name'],
+                'party'      => (string) $r['party'],
+                'party_abbr' => (string) $r['party_abbr'],
+                'photo'      => (string) $r['photo'],
+                'accent'     => (string) $r['accent'],
+                'votes'      => $votes,
+                'percent'    => $total > 0 ? round($votes * 100 / $total, 2) : 0.0,
             ];
         }, $rows);
     }

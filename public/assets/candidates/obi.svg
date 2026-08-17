@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" role="img" aria-label="Illustrated initials portrait: P O">
+  <title>Peter Obi — illustrated initials, not a photograph</title>
+  <defs>
+    <linearGradient id="o-bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#d9502f"/>
+      <stop offset="1" stop-color="#96280f"/>
+    </linearGradient>
+    <clipPath id="o-clip"><circle cx="100" cy="100" r="100"/></clipPath>
+  </defs>
+  <g clip-path="url(#o-clip)">
+    <rect width="200" height="200" fill="url(#o-bg)"/>
+    <circle cx="34" cy="30" r="86" fill="#ffffff" opacity=".07"/>
+    <circle cx="168" cy="178" r="62" fill="#000000" opacity=".08"/>
+    <text x="100" y="100" fill="#ffffff" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif"
+          font-size="76" font-weight="700" letter-spacing="2"
+          text-anchor="middle" dominant-baseline="central">PO</text>
+  </g>
+  <circle cx="100" cy="100" r="98.5" fill="none" stroke="#ffffff" stroke-opacity=".28" stroke-width="3"/>
+</svg>

@@ -42,8 +42,15 @@ CREATE TABLE IF NOT EXISTS candidates (
     id          INT UNSIGNED NOT NULL AUTO_INCREMENT,
     full_name   VARCHAR(150) NOT NULL,
     party       VARCHAR(150) NOT NULL DEFAULT '',
+    party_abbr  VARCHAR(12)  NOT NULL DEFAULT '',
     slogan      VARCHAR(255) NOT NULL DEFAULT '',
     bio         TEXT         NULL,
+    -- Path under /assets, e.g. '/assets/candidates/example.svg'. Stored as a
+    -- path rather than a URL: the Content-Security-Policy is img-src 'self',
+    -- so an image on another host would be blocked by the browser.
+    photo       VARCHAR(255) NOT NULL DEFAULT '',
+    -- Accent colour for this candidate's card, as a #rrggbb hex string.
+    accent      CHAR(7)      NOT NULL DEFAULT '#5b6673',
     is_active   TINYINT(1)   NOT NULL DEFAULT 1,
     sort_order  SMALLINT     NOT NULL DEFAULT 0,
     PRIMARY KEY (id)

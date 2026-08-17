@@ -29,6 +29,20 @@
     }
 }
 
+/* Party colours. These are CSS classes rather than inline styles because the
+   Content-Security-Policy is style-src 'self' — a style="" attribute would be
+   dropped by the browser. Unknown parties fall back to .party-default. */
+:root {
+    --party-default: #5b6673;
+    --party-apc:     #1d6fb8;
+    --party-pdp:     #0b7a4b;
+    --party-lp:      #b8341d;
+}
+.party-default { --accent: var(--party-default); }
+.party-apc     { --accent: var(--party-apc); }
+.party-pdp     { --accent: var(--party-pdp); }
+.party-lp      { --accent: var(--party-lp); }
+
 *, *::before, *::after { box-sizing: border-box; }
 
 body {
@@ -58,6 +72,31 @@ h3 { font-size: 1.05rem; margin: 0 0 .25rem; }
     background: var(--surface); padding: .75rem 1rem;
 }
 .skip-link:focus { left: .5rem; top: .5rem; }
+
+/* ---------- demo banner ----------
+   Deliberately loud. The site names real public figures on a public domain,
+   so "this is not a real election" has to survive a screenshot. */
+
+.demo-banner {
+    background: #7a2010;
+    color: #ffe9e3;
+    border-bottom: 2px solid #f0b323;
+}
+@media (prefers-color-scheme: dark) {
+    .demo-banner { background: #5e180b; }
+}
+.demo-banner-inner {
+    display: flex; align-items: center; gap: .85rem;
+    padding-top: .6rem; padding-bottom: .6rem;
+}
+.demo-banner p { margin: 0; font-size: .875rem; line-height: 1.45; }
+.demo-banner strong { color: #fff; }
+.demo-badge {
+    flex: none; align-self: flex-start;
+    background: var(--gold); color: #3a2a00;
+    font-size: .7rem; font-weight: 800; letter-spacing: .1em; text-transform: uppercase;
+    padding: .2rem .5rem; border-radius: 4px;
+}
 
 /* ---------- header ---------- */
 
@@ -147,7 +186,7 @@ main { padding: 2.5rem 1.25rem 4rem; }
 }
 .step-list p { margin: 0; color: var(--text-mute); }
 
-.card-grid { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); }
+.card-grid { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr)); }
 .card {
     background: var(--surface); border: 1px solid var(--border);
     border-radius: var(--radius); padding: 1.25rem; box-shadow: var(--shadow);
@@ -155,6 +194,50 @@ main { padding: 2.5rem 1.25rem 4rem; }
 .card .party { color: var(--green); font-weight: 600; margin: 0 0 .5rem; font-size: .9rem; }
 .card .slogan { font-style: italic; color: var(--text-mute); margin: 0 0 .5rem; }
 .card .bio { margin: 0; font-size: .925rem; color: var(--text-mute); }
+
+/* ---------- candidates ---------- */
+
+.candidate-card {
+    border-top: 3px solid var(--accent, var(--party-default));
+    display: flex; flex-direction: column; gap: .75rem;
+    transition: box-shadow .15s, transform .15s;
+}
+.candidate-card:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(16, 24, 40, .1); }
+@media (prefers-reduced-motion: reduce) {
+    .candidate-card, .candidate-card:hover { transition: none; transform: none; }
+}
+
+.candidate-head { display: flex; align-items: center; gap: .9rem; }
+.candidate-id { min-width: 0; }
+.candidate-card h3 { margin: 0 0 .2rem; font-size: 1.1rem; line-height: 1.25; }
+/* nowrap keeps the tag on the same line as the party name whatever the name
+   length, so cards in a row stay aligned; the name itself wraps instead. */
+.candidate-card .party {
+    display: flex; align-items: flex-start; gap: .45rem; flex-wrap: nowrap;
+    margin: 0; color: var(--text-mute); font-weight: 500; font-size: .85rem;
+}
+.party-name { min-width: 0; }
+.candidate-card .bio { margin: 0; }
+
+.avatar {
+    flex: none; width: 4.5rem; height: 4.5rem; border-radius: 50%;
+    background: var(--bg); object-fit: cover; display: block;
+}
+.avatar-sm { width: 3.5rem; height: 3.5rem; }
+.avatar-xs { width: 2.5rem; height: 2.5rem; }
+.avatar-fallback {
+    display: grid; place-items: center;
+    background: var(--accent, var(--party-default)); color: #fff;
+    font-weight: 700; font-size: 1.35rem; letter-spacing: .02em;
+}
+.avatar-sm.avatar-fallback { font-size: 1.05rem; }
+
+.party-tag {
+    flex: none;
+    background: var(--accent, var(--party-default)); color: #fff;
+    font-size: .68rem; font-weight: 800; letter-spacing: .06em;
+    padding: .15rem .4rem; border-radius: 4px;
+}
 
 /* ---------- forms ---------- */
 
@@ -180,17 +263,40 @@ input[type="text"], input[type="date"], input[type="tel"], select {
 .ballot legend { font-weight: 700; margin-bottom: .75rem; padding: 0; }
 
 .ballot-option {
-    display: flex; gap: .9rem; align-items: flex-start; cursor: pointer;
+    display: flex; gap: .9rem; align-items: center; cursor: pointer;
     background: var(--surface); border: 2px solid var(--border);
     border-radius: var(--radius); padding: 1rem;
+    transition: border-color .15s, background-color .15s;
 }
-.ballot-option:hover { border-color: var(--green); }
-.ballot-option:has(input:checked) { border-color: var(--green); background: rgba(11, 122, 75, .06); }
-.ballot-option input { margin-top: .3rem; width: 1.1rem; height: 1.1rem; accent-color: var(--green); }
-.ballot-body { display: grid; gap: .15rem; }
+.ballot-option:hover { border-color: var(--accent, var(--green)); }
+.ballot-option:has(input:checked) {
+    border-color: var(--accent, var(--green));
+    box-shadow: inset 0 0 0 1px var(--accent, var(--green));
+}
+.ballot-option:has(input:focus-visible) { outline: 3px solid var(--gold); outline-offset: 2px; }
+.ballot-option input { flex: none; width: 1.15rem; height: 1.15rem; accent-color: var(--accent, var(--green)); }
+.ballot-body { display: grid; gap: .2rem; min-width: 0; }
 .ballot-name { font-weight: 700; font-size: 1.05rem; }
-.ballot-party { color: var(--green); font-size: .9rem; font-weight: 600; }
+.ballot-party {
+    display: flex; align-items: flex-start; gap: .45rem; flex-wrap: nowrap;
+    color: var(--text-mute); font-size: .875rem; font-weight: 500;
+}
 .ballot-slogan { color: var(--text-mute); font-style: italic; font-size: .9rem; }
+
+/* Tick that appears only on the selected option. */
+.ballot-check {
+    flex: none; margin-left: auto; width: 1.6rem; height: 1.6rem;
+    border-radius: 50%; display: grid; place-items: center;
+    background: var(--accent, var(--green)); opacity: 0; transition: opacity .15s;
+}
+.ballot-check::after {
+    content: ""; width: .45rem; height: .8rem; margin-top: -.2rem;
+    border: solid #fff; border-width: 0 2.5px 2.5px 0; transform: rotate(45deg);
+}
+.ballot-option:has(input:checked) .ballot-check { opacity: 1; }
+@media (prefers-reduced-motion: reduce) {
+    .ballot-option, .ballot-check { transition: none; }
+}
 
 .confirm { display: flex; gap: .6rem; align-items: flex-start; color: var(--text-mute); }
 .confirm input { margin-top: .3rem; accent-color: var(--green); }
@@ -219,9 +325,17 @@ input[type="text"], input[type="date"], input[type="tel"], select {
 .stat-label { color: var(--text-mute); font-size: .85rem; }
 
 .tally { list-style: none; padding: 0; margin: 0; display: grid; gap: 1.1rem; }
-.tally-head { display: flex; align-items: baseline; gap: .6rem; flex-wrap: wrap; }
+.tally-row {
+    background: var(--surface); border: 1px solid var(--border);
+    border-left: 4px solid var(--accent, var(--party-default));
+    border-radius: var(--radius); padding: .9rem 1rem;
+}
+.tally-head { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; }
 .tally-name { font-weight: 700; }
-.tally-party { color: var(--text-mute); font-size: .875rem; }
+.tally-party {
+    display: flex; align-items: center; gap: .4rem;
+    color: var(--text-mute); font-size: .875rem;
+}
 .tally-figure { margin-left: auto; text-align: right; }
 .tally-count { display: block; color: var(--text-mute); font-size: .8rem; }
 
@@ -233,8 +347,8 @@ progress.bar {
     background: var(--border); border-radius: 999px; overflow: hidden;
 }
 progress.bar::-webkit-progress-bar { background: var(--border); border-radius: 999px; }
-progress.bar::-webkit-progress-value { background: var(--green); border-radius: 999px; }
-progress.bar::-moz-progress-bar { background: var(--green); border-radius: 999px; }
+progress.bar::-webkit-progress-value { background: var(--accent, var(--green)); border-radius: 999px; }
+progress.bar::-moz-progress-bar { background: var(--accent, var(--green)); border-radius: 999px; }
 
 .table-scroll { overflow-x: auto; }
 .table { width: 100%; border-collapse: collapse; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); }
