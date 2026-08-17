@@ -950,18 +950,59 @@ mysql -h database-1.c3q484mw8u8f.us-east-2.rds.amazonaws.com -u admin -p < sql/s
 mysql -h database-1.c3q484mw8u8f.us-east-2.rds.amazonaws.com -u admin -p letsvote < sql/seed_candidates.sql
 
 # Now the limited account the application actually uses.
-# Use the same password you put in db_pass in Secrets Manager.
-mysql -h database-1.c3q484mw8u8f.us-east-2.rds.amazonaws.com -u admin -p <<'SQL'
-CREATE USER 'letsvote_app'@'172.16.%.%' IDENTIFIED BY 'THE-DB-PASS-FROM-SECRETS-MANAGER';
+#
+# Do NOT type a password here. Read the one the application is already using
+# straight out of its config, so the two cannot disagree. This instance wrote
+# that file at boot from the Secrets Manager secret.
+P=$(grep '^pass' /etc/letsvote/config.ini | cut -d'"' -f2)
+
+# Note <<SQL is UNQUOTED so that $P expands. With <<'SQL' the shell would send
+# the literal characters $P to MySQL and you would set a password nobody knows.
+mysql -h database-1.c3q484mw8u8f.us-east-2.rds.amazonaws.com -u admin -p <<SQL
+CREATE USER 'letsvote_app'@'172.16.%.%' IDENTIFIED BY '$P';
 GRANT SELECT, INSERT, UPDATE, DELETE ON letsvote.* TO 'letsvote_app'@'172.16.%.%';
 FLUSH PRIVILEGES;
 SQL
 
-# Prove the app reaches both databases:
+# Confirm with exactly the credentials the application uses:
+mysql -h database-1.c3q484mw8u8f.us-east-2.rds.amazonaws.com -u letsvote_app -p"$P" letsvote -e "SELECT 1 AS ok;"
+
+# Prove the app itself reaches the database:
 curl -s "http://localhost/health.php?deep=1"
 ```
 
-Expect `"database": "ok"`. Replication copies the schema to the replica
+Expect `"database": "ok"`.
+
+> ### Read the password, do not retype it
+> This is the easiest place in the whole runbook to lose twenty minutes.
+>
+> If you invent a password here, or paste a placeholder literally, `CREATE USER`
+> **succeeds** — and every later symptom points somewhere else. The health check
+> reports `"database": "unreachable"`, which reads like a network or security
+> group problem, and the actual cause is only visible in
+> `/var/log/httpd/letsvote_error.log` as
+> `db ping failed: SQLSTATE[HY000] [1045] Access denied`.
+>
+> Two related traps:
+>
+> - **`GRANT ... ON letsvote.*` succeeds even if the database does not exist.**
+>   Load `schema.sql` first, or the grant silently applies to nothing and the
+>   app fails at connect with `Unknown database 'letsvote'`.
+> - **Editing the Secrets Manager secret does not update a running instance.**
+>   `/etc/letsvote/config.ini` is written once, at boot. After changing the
+>   secret you must replace the instances (Auto Scaling → *Instance refresh*),
+>   not just save the secret.
+>
+> If you have already created the account with the wrong password, fix it with
+> the same `$P` trick rather than guessing:
+>
+> ```bash
+> P=$(grep '^pass' /etc/letsvote/config.ini | cut -d'"' -f2)
+> mysql -h database-1.c3q484mw8u8f.us-east-2.rds.amazonaws.com -u admin -p <<SQL
+> ALTER USER 'letsvote_app'@'172.16.%.%' IDENTIFIED BY '$P';
+> FLUSH PRIVILEGES;
+> SQL
+> ``` Replication copies the schema to the replica
 automatically — never run DDL against a replica.
 
 Make yourself an admin **after your first Cognito sign-in** (the user row only
@@ -1131,6 +1172,7 @@ Check *Billing → Bills* the next day for anything still accruing.
 | `ID token issuer mismatch` after a successful Cognito login | user pool **Issuer type** was switched to *Updated* | Set it back to **Original** on the pool's *Domain* page. *Updated* issues `iss` as `issuer-cognito-idp.…`, which `Cognito::issuer()` does not build. See [step 6d](#6d-create-the-managed-login-domain) |
 | `redirect_mismatch` although the callback URL looks right | the domain prefix in the secret isn't the one the pool actually has | The console auto-creates a domain with a generated prefix. Compare `cognito_domain` in Secrets Manager against the pool's *Domain* page character for character |
 | `SQLSTATE[HY000] [2002]` | can't reach RDS | `letsvote-db-sg` must allow 3306 from `letsvote-webapp-sg`; RDS must use `letsvote-subnet-group` |
+| `health.php?deep=1` says `"database": "unreachable"` | almost always the app account's password, not the network | Read `/var/log/httpd/letsvote_error.log`. `[1045] Access denied` means the `CREATE USER` password differs from `db_pass` in the secret — see [step 13](#13-load-the-database-schema). `[1049] Unknown database` means `schema.sql` was never loaded. `[2002]` is the only one that is genuinely a network problem |
 | WAF blocks your own class | rules went straight to Block | Set the rule group to **Count**, review sampled requests, re-enable gradually |
 | `origin.letsvotes.com` serves the site instead of `403` | step 16 not done, or the header value doesn't match | Compare the CloudFront origin custom header with the ALB listener rule condition, character for character |
 | Everything returns `403 Access denied` | the ALB default rule is catching CloudFront too | The header rule must have a lower priority number (evaluated first) than the default fixed-response rule |
