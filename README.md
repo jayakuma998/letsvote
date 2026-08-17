@@ -73,6 +73,38 @@ config/       config.example.ini (the real file lives in /etc/letsvote)
 - **The health check is shallow.** If it tested the database, one RDS blip
   would fail both instances and the Auto Scaling group would delete the fleet.
 
+## Candidate portraits
+
+`candidates.photo` holds a **path**, not a URL — the Content-Security-Policy is
+`img-src 'self' data:`, so an image hosted anywhere else is blocked by the
+browser. The shipped portraits are illustrated placeholders
+(`public/assets/candidates/*.svg`), deliberately not photographs.
+
+To use real photographs:
+
+1. Obtain images **you have the right to publish**. Press photos are
+   copyrighted; the usual source for public figures is
+   [Wikimedia Commons](https://commons.wikimedia.org), where official portraits
+   are often public domain or CC BY-SA. Check the licence on each file.
+2. Drop them in `public/assets/candidates/` (e.g. `tinubu.jpg`). Square images
+   crop best — the CSS uses `object-fit: cover` on a circle.
+3. Point the database at them:
+
+   ```sql
+   UPDATE candidates SET photo = '/assets/candidates/tinubu.jpg' WHERE id = 1;
+   ```
+
+4. Rebuild and redeploy the artifact — images ship inside it, so a database
+   change alone is not enough.
+
+If a licence requires attribution (CC BY-SA does), add the credit to the page.
+Nothing in the code does this for you.
+
+> Using real people on a publicly reachable ballot is a judgement call, not a
+> neutral default. The banner in `templates/layout.php` and the notes in
+> `sql/seed_candidates.sql` exist because of it — read them before changing the
+> candidate list.
+
 ## Running it locally
 
 You need PHP 8.1+ and a MySQL you can reach.

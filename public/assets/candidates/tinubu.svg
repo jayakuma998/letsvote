@@ -1,19 +1,23 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" role="img" aria-label="Illustrated initials portrait: B T">
-  <title>Bola Ahmed Tinubu — illustrated initials, not a photograph</title>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 240" role="img" aria-labelledby="t-t">
+  <title id="t-t">Illustrated placeholder portrait for Bola Ahmed Tinubu — not a photograph</title>
   <defs>
-    <linearGradient id="t-bg" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#2f8ad4"/>
-      <stop offset="1" stop-color="#155a97"/>
+    <linearGradient id="t-bg" x1="0" y1="0" x2=".35" y2="1">
+      <stop offset="0" stop-color="#5cb0f0"/>
+      <stop offset="55%" stop-color="#1d6fb8"/>
+      <stop offset="100%" stop-color="#0d3f6e"/>
     </linearGradient>
-    <clipPath id="t-clip"><circle cx="100" cy="100" r="100"/></clipPath>
+    <linearGradient id="t-f" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity=".97"/>
+      <stop offset="100%" stop-color="#ffffff" stop-opacity=".80"/>
+    </linearGradient>
+    <clipPath id="t-c"><circle cx="120" cy="120" r="120"/></clipPath>
   </defs>
-  <g clip-path="url(#t-clip)">
-    <rect width="200" height="200" fill="url(#t-bg)"/>
-    <circle cx="34" cy="30" r="86" fill="#ffffff" opacity=".07"/>
-    <circle cx="168" cy="178" r="62" fill="#000000" opacity=".08"/>
-    <text x="100" y="100" fill="#ffffff" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif"
-          font-size="76" font-weight="700" letter-spacing="2"
-          text-anchor="middle" dominant-baseline="central">BT</text>
+  <g clip-path="url(#t-c)">
+    <rect width="240" height="240" fill="url(#t-bg)"/>
+    <circle cx="34" cy="28" r="108" fill="#fff" opacity=".10"/>
+    <circle cx="212" cy="220" r="80" fill="#000" opacity=".12"/>
+    <circle cx="120" cy="90" r="48" fill="url(#t-f)"/>
+    <path d="M18 244c0-54 46-88 102-88s102 34 102 88z" fill="url(#t-f)"/>
   </g>
-  <circle cx="100" cy="100" r="98.5" fill="none" stroke="#ffffff" stroke-opacity=".28" stroke-width="3"/>
+  <circle cx="120" cy="120" r="117" fill="none" stroke="#fff" stroke-opacity=".40" stroke-width="5"/>
 </svg>

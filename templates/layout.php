@@ -86,7 +86,7 @@
         <p>
             Candidates are real public figures, included so the exercise
             resembles something recognisable. Portraits are illustrated
-            initials, not photographs, and the biographies are limited to
+            placeholders, not photographs, and the biographies are limited to
             offices held. Nothing here should be read as a statement by or
             about any candidate.
         </p>

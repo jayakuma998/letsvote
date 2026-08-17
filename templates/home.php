@@ -94,8 +94,8 @@
             <?php endforeach; ?>
         </div>
         <p class="hint">
-            Portraits are illustrated initials, not photographs. Biographies are
-            limited to offices held.
+            Portraits are illustrated placeholders, not photographs. Biographies
+            are limited to offices held.
         </p>
     <?php endif; ?>
 </section>
