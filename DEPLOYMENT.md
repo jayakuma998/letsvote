@@ -25,9 +25,32 @@ Region for the whole build: **us-east-2** (Ohio).
 > the code is developed, the bucket is what gets deployed. See
 > [step 4b](#4b-s3-artifact-bucket-and-gateway-endpoint).
 
-> **Console steps verified against AWS documentation on 11 August 2026.**
-> Console wording drifts. Where AWS has recently renamed things, both the old
-> and new labels are given. Source links are at the bottom of each section.
+> **Console steps verified against AWS documentation on 11 August 2026, and
+> the whole build was walked end to end on 17 August 2026.** Console wording
+> drifts. Where AWS has recently renamed things, both the old and new labels
+> are given. Source links are at the bottom of each section.
+
+### The five things that actually went wrong on the dry run
+
+Every one of these produced a symptom that pointed somewhere other than the
+cause. If you read nothing else, read these.
+
+| # | What happened | The tell |
+|---|---|---|
+| 1 | `webapp-rt` was created but the `0.0.0.0/0 → NAT` route was never added ([step 2](#2-internet-gateway-nat-gateway-route-tables)) | Targets sit **unhealthy** at step 12, ten steps later. Instances cannot reach `dnf`, Secrets Manager or SSM, so you cannot even log in to look |
+| 2 | The app database account was created with a different password from the one in Secrets Manager ([step 13](#13-load-the-database-schema)) | `"database": "unreachable"` — reads like a network or security group fault; the real cause is `[1045] Access denied` in `letsvote_error.log` |
+| 3 | The Auto Scaling group was pointed at the **public** subnets | Everything works, so nothing alerts you — but the instances have public IPs, bypass the NAT gateway you are paying for, and the private-tier design is gone |
+| 4 | Editing the Secrets Manager secret did nothing to running instances | `config.ini` is written **once**, at boot. A reboot does not re-read it; you must replace the instances |
+| 5 | Building in us-east-2 needs **two** ACM certificates ([step 8](#8-acm-certificate)) | The ALB's certificate dropdown is empty, or CloudFront refuses your certificate. Neither error mentions Regions |
+
+### Pre-flight, before you start with a class
+
+- [ ] **Budget alert** set (step 0) — the single most expensive mistake is leaving this running
+- [ ] **RDS sized `db.t4g.micro`, Single-AZ, 20 GiB.** The console defaults to a far larger instance; the dry run accidentally ran `db.m7g.large` Multi-AZ with a matching replica, roughly twenty times the intended cost
+- [ ] **Master credentials in Secrets Manager** (step 5) — decide before creating the replica, it cannot be enabled afterwards
+- [ ] **Artifact uploaded** to S3 and `APP_VERSION` matching it (steps 4b, 9)
+- [ ] **Database migrated before deploying new code** — `sql/` changes go first, or the app queries columns that do not exist while `/health.php` still reports healthy
+- [ ] **Step 16 done** — until it is, the ALB serves the public directly and every WAF rule in step 17 is decorative
 
 ---
 
@@ -1051,6 +1074,13 @@ distribution*.
   `letsvotes.com` + `www.letsvotes.com` from [step 8](#8-acm-certificate). This
   is a *different* certificate from the one on the ALB — CloudFront will not
   list Cert A at all
+- **Minimum origin SSL / viewer TLS**: `TLSv1.2_2021`
+- **Price class**: `PriceClass_100` is enough for a class (North America and
+  Europe edges) and is the cheapest option
+
+**Built for this deployment:** distribution `EKFV4CP5LQRGS`, domain
+`d353bamf3fbxwk.cloudfront.net`. Deployment took under five minutes; AWS
+documents up to fifteen, so do not panic if yours is slower.
 
 > **The cache policy and origin request policy are the two settings that will
 > break your app if you get them wrong.** With the default `CachingOptimized`,
@@ -1078,10 +1108,47 @@ Route 53 → *Hosted zones* → your domain → *Create record*, three times:
 | `www.letsvotes.com` | A – **Alias** | Alias to CloudFront distribution |
 | `origin.letsvotes.com` | A – **Alias** | Alias to Application Load Balancer (us-east-2) |
 
+In the console you pick the target from a dropdown. If you ever script this,
+the CloudFront alias hosted zone ID is the constant **`Z2FDTNDATAQYW2`** for
+every distribution in every Region — the ALB's is Region-specific and comes
+from `CanonicalHostedZoneId` on the load balancer.
+
 Alias records are free and point straight at the AWS resource; a CNAME cannot
 be used at the zone apex.
 
+> **`origin` must exist before CloudFront can work**, and it is the record
+> people forget because CloudFront happily accepts an origin domain that does
+> not resolve yet. Create it in the same sitting as the other two.
+
 Give DNS a few minutes, then open `https://letsvotes.com`.
+
+### Verify the whole chain
+
+Run these once the distribution reports **Deployed**. Each one checks a
+different link, so a failure tells you where to look:
+
+```bash
+# 1. Valid certificate at the edge. ssl_verify=0 means the chain verified;
+#    note there is no -k, so a certificate problem fails the command.
+curl -s -o /dev/null -w 'HTTP %{http_code} ssl_verify=%{ssl_verify_result}\n' https://letsvotes.com/
+
+# 2. www resolves and serves
+curl -s -o /dev/null -w 'HTTP %{http_code}\n' https://www.letsvotes.com/
+
+# 3. Plain HTTP is redirected at the edge, not by the app
+curl -s -o /dev/null -w 'HTTP %{http_code} -> %{redirect_url}\n' http://letsvotes.com/
+
+# 4. The response really came through CloudFront
+curl -sI https://letsvotes.com/ | grep -iE '^(x-cache|via|x-amz-cf-pop)'
+
+# 5. Caching is genuinely off: repeated requests must alternate between the
+#    two instances. If the same hostname comes back every time, CloudFront is
+#    caching HTML and every student will see one student's session.
+for i in 1 2 3 4; do curl -s https://letsvotes.com/ | grep -oE 'ip-172-16-[0-9]+-[0-9]+' | head -1; done
+```
+
+Expected from check 4 is `x-cache: Miss from cloudfront` on **every** request —
+with `CachingDisabled` there should never be a `Hit`.
 
 ## 16. Lock the ALB to CloudFront
 
@@ -1089,6 +1156,23 @@ Give DNS a few minutes, then open `https://letsvotes.com`.
 name, so at this point anyone can hit `origin.letsvotes.com` directly and
 walk straight past CloudFront *and* the WAF rules you add in step 17. Rate
 limiting, managed rule groups, TLS policy — all bypassed.
+
+Prove it to the class before you fix it — one command, and it is far more
+convincing than the paragraph above:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' https://origin.letsvotes.com/
+```
+
+`200` means the ALB is serving the public directly. After this step it must
+return `403`.
+
+> ### Order matters, or you take the site down
+> Add the **custom header to CloudFront first** and wait for the distribution
+> to reach **Deployed**, and only then change the ALB's default rule to the
+> 403. Do it the other way round and every CloudFront request is rejected
+> until the distribution finishes deploying — several minutes of hard outage
+> in the middle of a class.
 
 AWS's documented fix is a shared secret header that only CloudFront sends,
 plus a load balancer rule that refuses everything else.
