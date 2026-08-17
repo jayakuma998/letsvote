@@ -30,7 +30,7 @@ Region for the whole build: **us-east-2** (Ohio).
 > drifts. Where AWS has recently renamed things, both the old and new labels
 > are given. Source links are at the bottom of each section.
 
-### The five things that actually went wrong on the dry run
+### The seven things that actually went wrong on the dry run
 
 Every one of these produced a symptom that pointed somewhere other than the
 cause. If you read nothing else, read these.
@@ -58,29 +58,36 @@ cause. If you read nothing else, read these.
 
 ## Contents
 
-| # | Step | Depends on |
-|---|---|---|
-| 0 | [Before you start](#0-before-you-start) | — |
-| 1 | [VPC and subnets](#1-vpc-and-subnets) | — |
-| 2 | [Internet gateway, NAT, route tables](#2-internet-gateway-nat-gateway-route-tables) | 1 |
-| 3 | [Security groups](#3-security-groups) | 1 |
-| 4 | [Secrets Manager](#4-secrets-manager) | — |
-| 4b | [S3 artifact bucket + gateway endpoint](#4b-s3-artifact-bucket-and-gateway-endpoint) | 1, 2 |
-| 5 | [RDS primary + read replica](#5-rds-primary--read-replica) | 1, 3, 4 |
-| 6 | [Cognito user pool](#6-cognito-user-pool) | — |
-| 7 | [IAM role for the instances](#7-iam-role-for-the-instances) | 4 |
-| 8 | [ACM certificate](#8-acm-certificate) | domain |
-| 9 | [Launch template](#9-launch-template) | 3, 4b, 7 |
-| 10 | [Target group](#10-target-group) | 1 |
-| 11 | [Application Load Balancer](#11-application-load-balancer) | 1, 3, 8, 10 |
-| 12 | [Auto Scaling group](#12-auto-scaling-group) | 9, 10 |
-| 13 | [Load the database schema](#13-load-the-database-schema) | 5, 12 |
-| 14 | [CloudFront](#14-cloudfront) | 8, 11 |
-| 15 | [Route 53](#15-route-53) | 11, 14 |
-| 16 | [Lock the ALB to CloudFront](#16-lock-the-alb-to-cloudfront) | 11, 14 |
-| 17 | [WAF](#17-waf) | 14 |
-| 18 | [Teardown](#18-teardown-in-this-order) | — |
-| 19 | [Troubleshooting](#19-when-it-does-not-work) | — |
+Roughly **2 to 2½ hours** end to end. Most of that is clicking; the waits are
+marked ⏳ and are worth planning teaching around rather than watching.
+
+| # | Step | Depends on | Time |
+|---|---|---|---|
+| 0 | [Before you start](#0-before-you-start) | — | 10 min |
+| 1 | [VPC and subnets](#1-vpc-and-subnets) | — | 15 min |
+| 2 | [Internet gateway, NAT, route tables](#2-internet-gateway-nat-gateway-route-tables) | 1 | 15 min ⏳ NAT ~3 min |
+| 3 | [Security groups](#3-security-groups) | 1 | 10 min |
+| 4 | [Secrets Manager](#4-secrets-manager) | — | 5 min |
+| 4b | [S3 artifact bucket + gateway endpoint](#4b-s3-artifact-bucket-and-gateway-endpoint) | 1, 2 | 10 min |
+| 5 | [RDS primary + read replica](#5-rds-primary--read-replica) | 1, 3, 4 | 10 min ⏳ **primary ~15 min, replica another ~10** |
+| 6 | [Cognito user pool](#6-cognito-user-pool) | — | 20 min |
+| 7 | [IAM role for the instances](#7-iam-role-for-the-instances) | 4, 4b | 10 min |
+| 8 | [ACM certificate](#8-acm-certificate) | domain | 10 min ⏳ validation ~5 min |
+| 9 | [Launch template](#9-launch-template) | 3, 4b, 7 | 10 min |
+| 10 | [Target group](#10-target-group) | 1 | 5 min |
+| 11 | [Application Load Balancer](#11-application-load-balancer) | 1, 3, 8, 10 | 10 min |
+| 12 | [Auto Scaling group](#12-auto-scaling-group) | 9, 10 | 10 min ⏳ boot ~4 min |
+| 13 | [Load the database schema](#13-load-the-database-schema) | 5, 12 | 10 min |
+| 14 | [CloudFront](#14-cloudfront) | 8, 11 | 10 min ⏳ deploy 5–15 min |
+| 15 | [Route 53](#15-route-53) | 11, 14 | 5 min |
+| 16 | [Lock the ALB to CloudFront](#16-lock-the-alb-to-cloudfront) | 11, 14 | 10 min ⏳ CloudFront redeploy |
+| 17 | [WAF](#17-waf) | 14 | 10 min |
+| 18 | [Teardown](#18-teardown-in-this-order) | — | 30 min ⏳ CloudFront 15–20 min |
+| 19 | [Troubleshooting](#19-when-it-does-not-work) | — | — |
+
+**Start steps 5 and 8 early.** RDS and certificate validation are the two long
+waits, and neither blocks steps 6, 7, 9 or 10 — kick them off, then carry on
+while they finish.
 
 ---
 
@@ -151,6 +158,13 @@ Create six subnets (VPC → Subnets → *Create subnet*):
 For both **public** subnets only: *Actions* → *Edit subnet settings* → tick
 **Enable auto-assign public IPv4 address**. Leave the other four off.
 
+> ### ✅ Checkpoint
+> **Six** subnets, three AZ-a and three AZ-b, and **exactly two** with
+> auto-assign public IPv4 on. Getting this wrong on a webapp subnet is what
+> puts public IPs on your app instances later. The Subnets list has an
+> *Auto-assign public IPv4 address* column — sort by it and confirm only
+> `public-subnet-01` and `public-subnet-02` say Yes.
+
 ## 2. Internet gateway, NAT gateway, route tables
 
 1. VPC → *Internet gateways* → create `letsvote-igw` → **Attach to VPC**.
@@ -219,6 +233,18 @@ No SSH rule anywhere. You reach instances with **SSM Session Manager** — no
 open port, no key pair, no bastion. This is also what makes the
 `X-Forwarded-For` header trustworthy: nothing on the internet can reach an
 instance directly to forge it.
+
+> ### ✅ Checkpoint
+> Three groups, and the two that matter reference **another security group**,
+> not a CIDR:
+>
+> - `letsvote-webapp-sg` inbound 80 shows **`sg-…` (letsvote-lb-sg)**
+> - `letsvote-db-sg` inbound 3306 shows **`sg-…` (letsvote-webapp-sg)**
+>
+> If either shows `0.0.0.0/0` you have typed a CIDR where the console wanted a
+> group. It will still work, which is exactly why it is worth checking now —
+> the whole point of this step is that the tiers only accept traffic from each
+> other, not from an address range that happens to match.
 
 ## 4. Secrets Manager
 
@@ -840,6 +866,18 @@ you do not.
 
 Role name: `letsvote-ec2-role`.
 
+> ### ✅ Checkpoint
+> The role needs **both** halves, and a missing one fails at a different point:
+>
+> | | Without it |
+> |---|---|
+> | `AmazonSSMManagedInstanceCore` | instances boot but never appear in Session Manager, so you cannot debug them |
+> | inline `secretsmanager:GetSecretValue` | boot fails with `Missing required config value 'db.host'` |
+> | inline `s3:GetObject` | boot fails with a `403` on `HeadObject` before anything is installed |
+>
+> Check the secret ARN ends with **`-*`** and the S3 resource has **no Region
+> or account number** — those two ARNs look alike and are written differently.
+
 ## 8. ACM certificate
 
 **You need two certificates, in two different Regions.** An ALB can only use a
@@ -989,6 +1027,15 @@ Balancer**, *Create*.
 
 Copy the ALB DNS name.
 
+> ### ✅ Checkpoint
+> **Two listeners**, HTTPS:443 forwarding to `letsvote-tg` and HTTP:80
+> redirecting to 443. The ALB will show **active** but its targets stay
+> unhealthy until [step 12](#12-auto-scaling-group) creates instances — that is
+> expected here, not a fault.
+>
+> An empty certificate dropdown means Cert A is in the wrong Region. It must be
+> **us-east-2**; the us-east-1 one is for CloudFront and will never appear here.
+
 ## 12. Auto Scaling group
 
 EC2 → *Auto Scaling groups* → *Create an Auto Scaling group*.
@@ -996,8 +1043,24 @@ EC2 → *Auto Scaling groups* → *Create an Auto Scaling group*.
 1. **Choose launch template or configuration**: name `letsvote-asg`, launch
    template `letsvote-webapp-lt`, version **Latest**.
 2. **Choose instance launch options**: VPC `letsvote-vpc`; under
-   **Availability Zones and subnets** pick **both** `webapp-subnet-01` and
-   `webapp-subnet-02` — one subnet means no multi-AZ resilience.
+   **Availability Zones and subnets** pick **both `webapp-subnet-01` and
+   `webapp-subnet-02`** — and nothing else.
+
+   > ### Read the subnet names, not their position in the list
+   > This is where the dry run went wrong, and **nothing tells you**. The
+   > dropdown lists all six subnets, `public-subnet-01` and `public-subnet-02`
+   > appear first, and picking those produces a site that works perfectly —
+   > while quietly undoing the design:
+   >
+   > - instances get **public IP addresses** and sit on the internet-facing tier
+   > - they route via the internet gateway, so the **NAT gateway you are paying
+   >   ~$33/month for carries nothing**
+   > - they use `public-rt`, so they miss the **S3 gateway endpoint** attached
+   >   to `webapp-rt` and fetch the artifact over the internet instead
+   >
+   > There is no error, no warning, and no failed health check. The only tell
+   > is the private IP: webapp instances must be `172.16.2.x` or `172.16.3.x`.
+   > If you see `172.16.0.x` or `172.16.1.x`, they are in the public subnets.
 3. **Integrate with other services**:
    - **Load balancing** → *Attach to an existing load balancer* → *Choose from
      your load balancer target groups* → `letsvote-tg`
@@ -1011,6 +1074,24 @@ EC2 → *Auto Scaling groups* → *Create an Auto Scaling group*.
 
 Two instances boot. Watch the target group until both read **healthy**. If they
 don't, jump to [troubleshooting](#19-when-it-does-not-work).
+
+> ### ✅ Checkpoint — do not continue until all four are true
+> This is the most important checkpoint in the runbook. Everything from here
+> assumes a working fleet.
+>
+> 1. **EC2 → Instances**: exactly two, both `running`
+> 2. Their **private IPs are `172.16.2.x` and `172.16.3.x`** — one per AZ. Any
+>    `172.16.0.x` or `172.16.1.x` means they are in the public subnets: fix the
+>    ASG's subnets and refresh
+> 3. Their **Public IPv4 address column is empty**. A public IP means the same
+>    problem
+> 4. **Target group → Targets**: both **healthy**
+>
+> Both unhealthy is almost always the missing NAT route from
+> [step 2](#2-internet-gateway-nat-gateway-route-tables). Session Manager in
+> and read `/var/log/cloud-init-output.log` — and if Session Manager itself
+> cannot connect, that *is* the answer, because the SSM agent needs the same
+> route.
 
 ## 13. Load the database schema
 
@@ -1218,7 +1299,14 @@ plus a load balancer rule that refuses everything else.
 
 1. **CloudFront** → your distribution → *Origins* → edit the origin → **Add
    custom header**: name `X-Origin-Verify`, value a long random string. Treat
-   it like a password.
+   it like a password. Generate one rather than inventing it:
+
+   ```bash
+   openssl rand -base64 32
+   ```
+
+   Paste the **same value** into CloudFront and into the ALB rule below. A
+   mismatch means everything returns 403 — including CloudFront.
 2. **EC2 → Load balancers** → `letsvote-alb` → the **HTTPS:443** listener →
    *Manage rules*:
    - Add a rule: **Condition = Http header** `X-Origin-Verify` equals your
