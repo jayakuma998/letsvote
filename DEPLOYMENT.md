@@ -1289,6 +1289,30 @@ Reverse dependency order, or deletions fail:
    window), Cognito user pool
 9. Subnets, route tables, internet gateway, then the VPC
 
+### Four things that block a teardown
+
+All four were hit on the dry run:
+
+| Blocker | What you see | Fix |
+|---|---|---|
+| **Cognito deletion protection** is ON by default for new pools | `The user pool cannot be deleted because deletion protection is activated` | Set deletion protection to **Inactive** first, then delete. Delete the **domain** before the pool |
+| **S3 bucket versioning** — which [step 4b](#4b-s3-artifact-bucket-and-gateway-endpoint) told you to enable | `The bucket you tried to delete is not empty. You must delete all versions` | Deleting objects only writes delete markers. Purge every **version** *and* every **delete marker**, then delete the bucket |
+| **Security groups reference each other** | `DependencyViolation` | Revoke the rules on all three first, then delete the groups. They cannot be deleted while any rule points at another |
+| **A certificate still attached to CloudFront** | ACM refuses the delete | Delete the distribution first, and remember disabling it is a separate step that must reach **Deployed** before the delete is accepted |
+
+**The ALB's Elastic IPs release themselves** when the load balancer is deleted —
+only the one you allocated for the NAT gateway needs releasing by hand. An
+unattached EIP is still billed, so check *Elastic IPs* is empty at the end.
+
+### Keeping the hosted zone
+
+If you are tearing down to rebuild against the same domain, **delete the
+records but keep the hosted zone**. Deleting and recreating a zone assigns
+**new nameservers**, which you then have to update at the registrar and wait to
+propagate — hours, potentially, and not something to discover on the morning of
+a class. A zone left holding only its `NS` and `SOA` records costs $0.50/month
+and makes the rebuild start from a working delegation.
+
 Check *Billing → Bills* the next day for anything still accruing.
 
 ## 19. When it does not work
