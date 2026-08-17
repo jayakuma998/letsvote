@@ -42,6 +42,8 @@ cause. If you read nothing else, read these.
 | 3 | The Auto Scaling group was pointed at the **public** subnets | Everything works, so nothing alerts you — but the instances have public IPs, bypass the NAT gateway you are paying for, and the private-tier design is gone |
 | 4 | Editing the Secrets Manager secret did nothing to running instances | `config.ini` is written **once**, at boot. A reboot does not re-read it; you must replace the instances |
 | 5 | Building in us-east-2 needs **two** ACM certificates ([step 8](#8-acm-certificate)) | The ALB's certificate dropdown is empty, or CloudFront refuses your certificate. Neither error mentions Regions |
+| 6 | The app client was missing the **`profile`** scope ([step 6c](#6c-set-the-callback-and-sign-out-urls)) | Cognito shows `Invalid request — Please check your input and try again` and names nothing. It rejects the authorize request if any single requested scope is not allowed |
+| 7 | The Cognito domain reached Secrets Manager with **three spaces inside it**, from a line-wrapped copy-paste ([step 6d](#6d-create-the-managed-login-domain)) | Sign-up goes to a domain that cannot resolve. The spaces are invisible in the console and appear as `%20` in the address bar |
 
 ### Pre-flight, before you start with a class
 
@@ -522,6 +524,21 @@ choose **Edit** on the managed login pages configuration:
 | **OAuth 2.0 grant types** | **Authorization code grant** only |
 | **OpenID Connect scopes** | `openid`, `email`, `profile` |
 
+> ### Get the scopes exactly right — this one cost us an evening
+> The quick-create flow enabled **`openid`, `email`, `phone`** and **not
+> `profile`**. `src/Cognito.php` requests `openid email profile`, and Cognito
+> rejects an authorize request if **any** requested scope is not allowed.
+>
+> The user sees only this, on a Cognito-branded page:
+>
+> > **Invalid request** — Please check your input and try again.
+>
+> Nothing names the scope. Tick `profile`; untick `phone` unless you want it.
+>
+> **Also set the sign-out URL now.** The creation flow never asks for it, so it
+> is empty by default, and sign-out fails *after* a successful login — the
+> point at which everything looked like it was working.
+
 The sign-out URL is not requested anywhere during creation, so it is empty until
 you set it here. Without it, `logout.php` sends users to Cognito and Cognito
 refuses to redirect them back.
@@ -571,6 +588,23 @@ typeable.
 > | ✅ correct | `us-east-21lectpe5u.auth.us-east-2.amazoncognito.com` |
 > | ❌ wrong | `https://us-east-21lectpe5u.auth.us-east-2.amazoncognito.com` |
 > | ❌ wrong | `us-east-21lectpe5u.auth.us-east-2.amazoncognito.com/` |
+>
+> **And check for whitespace.** This value is long enough to wrap in a terminal
+> or a chat window, and a wrapped copy brings the indent with it. On the dry
+> run the secret ended up holding
+> `us-east-21lectpe5u.au␣␣␣th.us-east-2.amazoncognito.com` — "auth" split by
+> three spaces. Sign-up then fails on a domain that does not exist, and the
+> spaces are invisible in the console; they show up as `%20` in the browser's
+> address bar.
+>
+> The value is exactly **51 characters** for a prefix of `us-east-21lectpe5u`.
+> Paste it into the secret, then count:
+>
+> ```bash
+> aws secretsmanager get-secret-value --secret-id letsvote/app-config \
+>   --region us-east-2 --query SecretString --output text \
+>   | jq -r '.cognito_domain | "\(.) (\(length) chars)"'
+> ```
 
 #### Optional: a custom domain such as `auth.letsvotes.com`
 
@@ -1048,7 +1082,12 @@ Expect `"database": "ok"`.
 automatically — never run DDL against a replica.
 
 Make yourself an admin **after your first Cognito sign-in** (the user row only
-exists once you have logged in once):
+exists once you have logged in once).
+
+Note this needs **no master password** — `letsvote_app` already has `UPDATE` on
+`letsvote.*`, and changing a row is exactly what it is allowed to do. Being
+able to promote an admin without DDL rights, and *not* being able to add a
+column, is the least-privilege split from step 13 working as intended:
 
 ```sql
 UPDATE users SET is_admin = 1 WHERE email = 'you@example.com';
@@ -1267,6 +1306,10 @@ Check *Billing → Bills* the next day for anything still accruing.
 | Logged out at random / "sign-in link expired" | CloudFront not forwarding cookies | Cache policy `CachingDisabled`, origin request policy `AllViewer` |
 | Everyone sees the same logged-in page | CloudFront caching HTML | Same as above, then invalidate `/*` |
 | Sign-up shows an error but the user exists | Cognito can't send the verification email | Set attribute verification to **Send email message**; check the 50/day Cognito cap |
+| Cognito page says **`Invalid request — Please check your input and try again`** | a requested OAuth scope is not allowed on the app client | The app asks for `openid email profile`. Enable **`profile`** in the app client's login-page settings ([6c](#6c-set-the-callback-and-sign-out-urls)). Cognito rejects the whole request if any one scope is missing, and never says which |
+| Sign-up link goes to a domain that will not resolve, address bar shows `%20` | whitespace in `cognito_domain` from a wrapped copy-paste | `%20` is a space. Re-copy the domain as one unbroken string and check its length ([6d](#6d-create-the-managed-login-domain)) |
+| Sign-out fails after a login that worked | app client has no sign-out URL | Nothing asks for it during creation. Set **Allowed sign-out URLs** to `https://letsvotes.com/`, with the trailing slash |
+| An app client edit silently broke something unrelated | `UpdateUserPoolClient` resets omitted fields | AWS documents this: a field you do not send is set back to its default. In the console you are safe; via CLI or SDK, read the client first, change only what you mean to, and write the whole object back |
 | `Could not complete your sign-in` | instance can't reach the token endpoint | Check NAT gateway, `webapp-rt`, outbound 443 on `letsvote-webapp-sg`; read `/var/log/httpd/letsvote_error.log` |
 | `Missing required config value 'db.host'` | Secrets Manager read failed at boot | Check the instance profile and the `-*` on the secret ARN in the IAM policy. Also confirm the secret is in **us-east-2** and the policy ARN says `us-east-2` — a secret in another Region is invisible to the instances |
 | No certificate to choose in the ALB listener dropdown ([step 11](#11-application-load-balancer)) | the certificate was requested in us-east-1 | An ALB only lists certificates from its own Region. Request **Cert A** again in **us-east-2** ([step 8](#8-acm-certificate)) |
