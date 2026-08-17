@@ -293,8 +293,27 @@ this is a concrete demonstration that architecture choices show up on the bill.
 2. RDS → *Create database* → **Standard create** → **MySQL 8.0**
    - Template **Dev/Test** (Free tier will not let you add a read replica)
    - DB instance identifier `database-1`
-   - Master username `admin`; save this password in your own notes — it is
-     **not** the application password
+   - Master username `admin`. **Choose "Manage master credentials in AWS
+     Secrets Manager"** rather than typing a password — AWS then generates and
+     stores it, and nobody has to keep a master password in a notes app.
+
+   > ### Decide this now — it cannot be turned on later
+   > AWS rejects `ManageMasterUserPassword` on an instance that **already has a
+   > read replica**:
+   >
+   > > *RDS can't configure the database with engine mysql because
+   > > ManageMasterUserPassword isn't supported on DB instances that have read
+   > > replicas.*
+   >
+   > So once you create `rr` in step 5.3, the only way to adopt managed
+   > credentials is to delete the replica first. If you skip it and set a
+   > password by hand, that password is the one thing in this build that has to
+   > travel outside AWS — and it is needed again in
+   > [step 13](#13-load-the-database-schema), which is where people paste it
+   > somewhere they should not.
+   >
+   > If you do set it manually, treat it as a credential: not a word like
+   > `letsvote`, and not something typed into a chat window or a shared doc.
    - `db.t4g.micro`, 20 GiB gp3
    - Availability: Single-AZ is fine for class; Multi-AZ doubles the cost
    - Connectivity: VPC `letsvote-vpc`, the subnet group above,
