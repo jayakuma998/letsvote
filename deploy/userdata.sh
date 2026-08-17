@@ -16,7 +16,7 @@ set -euxo pipefail
 # 1. Things you must change
 # ---------------------------------------------------------------------------
 APP_BUCKET="letsvote-artifacts-860977520909"              # S3 artifact bucket
-APP_VERSION="1.0.0"                                       # which build to run -- see below
+APP_VERSION="1.2.0"                                       # which build to run -- see below
 SECRET_ID="letsvote/app-config"                           # AWS Secrets Manager secret name
 AWS_REGION="us-east-2"
 BASE_URL="https://letsvotes.com"                          # your real domain, no trailing slash
