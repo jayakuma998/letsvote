@@ -45,6 +45,19 @@ cause. If you read nothing else, read these.
 | 6 | The app client was missing the **`profile`** scope ([step 6c](#6c-set-the-callback-and-sign-out-urls)) | Cognito shows `Invalid request — Please check your input and try again` and names nothing. It rejects the authorize request if any single requested scope is not allowed |
 | 7 | The Cognito domain reached Secrets Manager with **three spaces inside it**, from a line-wrapped copy-paste ([step 6d](#6d-create-the-managed-login-domain)) | Sign-up goes to a domain that cannot resolve. The spaces are invisible in the console and appear as `%20` in the address bar |
 
+The build was then torn down and repeated live with a class. Four **more**
+things went wrong the second time, none of them repeats of the first seven:
+
+| # | What happened | The tell |
+|---|---|---|
+| 8 | `APP_VERSION` named an artifact that was not in the bucket ([step 9](#9-launch-template)) | Boot dies with **`403 Forbidden`**, not 404 — see [the 403 trap](#the-403-that-is-really-a-404) — so it looks like an IAM problem and sends you to the wrong place |
+| 9 | The app client had **no OAuth configuration at all** — callbacks, scopes, flows and the OAuth toggle were all `null` ([step 6c](#6c-set-the-callback-and-sign-out-urls)) | Same `Invalid request` page as #6. The pool, the client secret and the domain were all correct, so everything *looked* built |
+| 10 | CloudFront's origin was left as the ALB's `*.elb.amazonaws.com` name instead of `origin.letsvotes.com` ([step 14](#14-cloudfront)) | **502 Bad Gateway** from CloudFront while the ALB itself serves fine. This is the exact failure [step 8](#8-acm-certificate) explains and it still happened |
+| 11 | Only `www` and `origin` records were created — **no apex `letsvotes.com`** ([step 15](#15-route-53)) | `www.letsvotes.com` works, the bare domain does not resolve, and sign-in breaks on the callback because the Cognito return URL is on the apex |
+
+**Eight of these eleven produced a symptom that pointed away from the cause.**
+That, more than the architecture, is what the exercise teaches.
+
 ### Pre-flight, before you start with a class
 
 - [ ] **Budget alert** set (step 0) — the single most expensive mistake is leaving this running
@@ -53,6 +66,19 @@ cause. If you read nothing else, read these.
 - [ ] **Artifact uploaded** to S3 and `APP_VERSION` matching it (steps 4b, 9)
 - [ ] **Database migrated before deploying new code** — `sql/` changes go first, or the app queries columns that do not exist while `/health.php` still reports healthy
 - [ ] **Step 16 done** — until it is, the ALB serves the public directly and every WAF rule in step 17 is decorative
+
+> ### Step 16 has never actually been done
+> Both runs of this build — the solo dry run and the live class — reached the
+> end with `origin.letsvotes.com` still answering the public. It is the one
+> step that gets skipped, because everything works without it and nothing
+> complains.
+>
+> Budget five minutes for it in the next build, and use the before/after as a
+> demonstration rather than an aside:
+>
+> ```bash
+> curl -s -o /dev/null -w '%{http_code}\n' https://origin.letsvotes.com/   # 200 before, 403 after
+> ```
 
 ---
 
@@ -574,6 +600,27 @@ Never enable **Implicit grant** — it returns tokens in the browser URL bar.
 For local development you may also add `http://localhost:8000/callback.php`;
 Cognito permits plain `http` only for `localhost`.
 
+> ### ✅ Checkpoint — confirm these actually saved
+> On the class run **every one of these fields was `null`** after the pool was
+> built. The pool, the client secret, the required attributes and the domain
+> were all correct, so nothing looked wrong until the first sign-in attempt.
+> Check them rather than assuming the form saved:
+>
+> ```bash
+> aws cognito-idp describe-user-pool-client --region us-east-2 \
+>   --user-pool-id <POOL-ID> --client-id <CLIENT-ID> \
+>   --query 'UserPoolClient.{Callbacks:CallbackURLs,Logout:LogoutURLs,Flows:AllowedOAuthFlows,Scopes:AllowedOAuthScopes,Enabled:AllowedOAuthFlowsUserPoolClient}'
+> ```
+>
+> All five must be populated: callbacks, logout, `["code"]`,
+> `["openid","email","profile"]`, and `Enabled: true`. A `null` anywhere gives
+> the same unhelpful `Invalid request` page.
+>
+> **If you fix this with the CLI rather than the console**, read the client
+> first and write the whole object back —
+> [`UpdateUserPoolClient` resets every field you omit](#19-when-it-does-not-work),
+> so a naive update wipes the callback URL you just set.
+
 Then copy the **Client ID** and **Client secret** (revealed with *Show client
 secret*) into the Secrets Manager secret.
 
@@ -590,7 +637,7 @@ The **Domain** page offers two kinds, and this runbook uses the first:
 machine-generated prefix derived from the pool ID, for example:
 
 ```
-https://us-east-21lectpe5u.auth.us-east-2.amazoncognito.com
+https://YOURPREFIX.auth.us-east-2.amazoncognito.com
 ```
 
 That is a complete, working managed login domain — the application does not
@@ -611,20 +658,21 @@ typeable.
 >
 > | | |
 > |---|---|
-> | ✅ correct | `us-east-21lectpe5u.auth.us-east-2.amazoncognito.com` |
-> | ❌ wrong | `https://us-east-21lectpe5u.auth.us-east-2.amazoncognito.com` |
-> | ❌ wrong | `us-east-21lectpe5u.auth.us-east-2.amazoncognito.com/` |
+> | ✅ correct | `YOURPREFIX.auth.us-east-2.amazoncognito.com` |
+> | ❌ wrong | `https://YOURPREFIX.auth.us-east-2.amazoncognito.com` |
+> | ❌ wrong | `YOURPREFIX.auth.us-east-2.amazoncognito.com/` |
 >
 > **And check for whitespace.** This value is long enough to wrap in a terminal
 > or a chat window, and a wrapped copy brings the indent with it. On the dry
 > run the secret ended up holding
-> `us-east-21lectpe5u.au␣␣␣th.us-east-2.amazoncognito.com` — "auth" split by
+> `YOURPREFIX.au␣␣␣th.us-east-2.amazoncognito.com` — "auth" split by
 > three spaces. Sign-up then fails on a domain that does not exist, and the
 > spaces are invisible in the console; they show up as `%20` in the browser's
 > address bar.
 >
-> The value is exactly **51 characters** for a prefix of `us-east-21lectpe5u`.
-> Paste it into the secret, then count:
+> Whatever your prefix is, the stored value must contain **no spaces** and
+> must equal the domain shown on the pool's *Domain* page with `https://`
+> removed. Paste it into the secret, then read it back and eyeball it:
 >
 > ```bash
 > aws secretsmanager get-secret-value --secret-id letsvote/app-config \
@@ -945,6 +993,42 @@ EC2 → *Launch templates* → *Create*.
   `letsvote/letsvote-<version>.zip` from the bucket, so every instance in the
   fleet runs byte-identical code regardless of when it launched.
 
+### The 403 that is really a 404
+
+When user data fails at the S3 fetch you will see this in
+`/var/log/cloud-init-output.log`:
+
+```
++ aws s3 cp s3://letsvote-artifacts-…/letsvote/letsvote-1.2.0.zip /tmp/letsvote.zip
+fatal error: An error occurred (403) when calling the HeadObject operation: Forbidden
+```
+
+**403 does not mean your IAM policy is wrong.** S3 deliberately returns
+`403 Forbidden` rather than `404 Not Found` for an object that does not exist,
+when the caller lacks `s3:ListBucket` — which is exactly the least-privilege
+policy [step 7](#7-iam-role-for-the-instances) asks for. Telling you the object
+is missing would leak whether it exists, so S3 refuses to distinguish the two.
+
+So a **missing file and a permissions failure are the same error**. Check the
+cheap one first:
+
+```bash
+# Does the object the launch template asks for actually exist?
+aws s3 ls s3://letsvote-artifacts-860977520909/letsvote/ --region us-east-2
+
+# What does the launch template ask for?
+aws ec2 describe-launch-template-versions --region us-east-2 \
+  --launch-template-name letsvote-lt --versions '$Latest' \
+  --query 'LaunchTemplateVersions[0].LaunchTemplateData.UserData' \
+  --output text | base64 -d | grep -E '^APP_(BUCKET|VERSION)='
+```
+
+`APP_VERSION` and the filename must match **exactly**. On the class run the
+bucket held `letsvote-1.0.0.zip` while the template asked for
+`letsvote-1.2.0.zip`, and the 403 sent us to IAM for the first ten minutes.
+
+Only once you have confirmed the object exists is it worth checking the policy.
+
 ### How you deploy a change
 
 This is the part worth rehearsing before class, because it is the question
@@ -1103,8 +1187,8 @@ sudo -i
 cd /var/www/letsvote
 
 # Master credentials, one time only, to create the schema and the app account.
-mysql -h database-1.c3q484mw8u8f.us-east-2.rds.amazonaws.com -u admin -p < sql/schema.sql
-mysql -h database-1.c3q484mw8u8f.us-east-2.rds.amazonaws.com -u admin -p letsvote < sql/seed_candidates.sql
+mysql -h YOUR-DB.XXXXXX.us-east-2.rds.amazonaws.com -u admin -p < sql/schema.sql
+mysql -h YOUR-DB.XXXXXX.us-east-2.rds.amazonaws.com -u admin -p letsvote < sql/seed_candidates.sql
 
 # Now the limited account the application actually uses.
 #
@@ -1115,14 +1199,14 @@ P=$(grep '^pass' /etc/letsvote/config.ini | cut -d'"' -f2)
 
 # Note <<SQL is UNQUOTED so that $P expands. With <<'SQL' the shell would send
 # the literal characters $P to MySQL and you would set a password nobody knows.
-mysql -h database-1.c3q484mw8u8f.us-east-2.rds.amazonaws.com -u admin -p <<SQL
+mysql -h YOUR-DB.XXXXXX.us-east-2.rds.amazonaws.com -u admin -p <<SQL
 CREATE USER 'letsvote_app'@'172.16.%.%' IDENTIFIED BY '$P';
 GRANT SELECT, INSERT, UPDATE, DELETE ON letsvote.* TO 'letsvote_app'@'172.16.%.%';
 FLUSH PRIVILEGES;
 SQL
 
 # Confirm with exactly the credentials the application uses:
-mysql -h database-1.c3q484mw8u8f.us-east-2.rds.amazonaws.com -u letsvote_app -p"$P" letsvote -e "SELECT 1 AS ok;"
+mysql -h YOUR-DB.XXXXXX.us-east-2.rds.amazonaws.com -u letsvote_app -p"$P" letsvote -e "SELECT 1 AS ok;"
 
 # Prove the app itself reaches the database:
 curl -s "http://localhost/health.php?deep=1"
@@ -1155,7 +1239,7 @@ Expect `"database": "ok"`.
 >
 > ```bash
 > P=$(grep '^pass' /etc/letsvote/config.ini | cut -d'"' -f2)
-> mysql -h database-1.c3q484mw8u8f.us-east-2.rds.amazonaws.com -u admin -p <<SQL
+> mysql -h YOUR-DB.XXXXXX.us-east-2.rds.amazonaws.com -u admin -p <<SQL
 > ALTER USER 'letsvote_app'@'172.16.%.%' IDENTIFIED BY '$P';
 > FLUSH PRIVILEGES;
 > SQL
@@ -1198,9 +1282,35 @@ distribution*.
 - **Price class**: `PriceClass_100` is enough for a class (North America and
   Europe edges) and is the cheapest option
 
-**Built for this deployment:** distribution `EKFV4CP5LQRGS`, domain
-`d353bamf3fbxwk.cloudfront.net`. Deployment took under five minutes; AWS
-documents up to fifteen, so do not panic if yours is slower.
+Deployment usually takes under five minutes; AWS documents up to fifteen, so do
+not panic if yours is slower.
+
+> ### ✅ Checkpoint — the origin domain is the one people get wrong
+> **Origin domain must be `origin.letsvotes.com`.** The console will happily
+> accept the ALB's own name — it even suggests it, because the ALB is in a
+> dropdown of your load balancers. Choosing it gives you:
+>
+> ```
+> 502 Bad Gateway
+> ```
+>
+> …from CloudFront, while the ALB itself serves perfectly. With
+> `OriginProtocolPolicy: https-only`, CloudFront validates the origin's
+> certificate against the hostname it dialled. Your ALB presents a certificate
+> for `origin.letsvotes.com`, which cannot match `*.elb.amazonaws.com`, and no
+> certificate you are able to obtain ever will — you do not own
+> `amazonaws.com`. That is the whole reason [step 8](#8-acm-certificate)
+> creates a third name.
+>
+> Verify before moving on:
+>
+> ```bash
+> aws cloudfront get-distribution --id <ID> \
+>   --query 'Distribution.DistributionConfig.Origins.Items[0].DomainName' --output text
+> ```
+>
+> If that prints anything ending in `.elb.amazonaws.com`, fix it now. It
+> happened on the class run despite step 8 explaining exactly this.
 
 > **The cache policy and origin request policy are the two settings that will
 > break your app if you get them wrong.** With the default `CachingOptimized`,
@@ -1232,6 +1342,30 @@ In the console you pick the target from a dropdown. If you ever script this,
 the CloudFront alias hosted zone ID is the constant **`Z2FDTNDATAQYW2`** for
 every distribution in every Region — the ALB's is Region-specific and comes
 from `CanonicalHostedZoneId` on the load balancer.
+
+> ### ✅ Checkpoint — all three records, and the apex is the one that gets missed
+> ```bash
+> aws route53 list-resource-record-sets --hosted-zone-id <ZONE-ID> \
+>   --query 'ResourceRecordSets[?Type==`A`].{Name:Name,Alias:AliasTarget.DNSName}' --output table
+> ```
+>
+> You need **three** A records. On the class run only `www` and `origin`
+> existed, and the missing apex is unusually painful because of *what* breaks:
+>
+> - `www.letsvotes.com` works, so the site looks fine
+> - `letsvotes.com` does not resolve at all
+> - **sign-in breaks**, because the Cognito callback is
+>   `https://letsvotes.com/callback.php` — on the apex. Users authenticate
+>   successfully and then land on a dead domain
+>
+> Test the apex explicitly, not just whichever URL you happen to have open:
+>
+> ```bash
+> curl -s -o /dev/null -w '%{http_code}\n' https://letsvotes.com/
+> ```
+>
+> A new record takes a minute or two to propagate. `dig +short letsvotes.com A
+> @8.8.8.8` returning nothing means wait, not that you did it wrong.
 
 Alias records are free and point straight at the AWS resource; a CNAME cannot
 be used at the zone apex.
