@@ -30,51 +30,154 @@ Region for the whole build: **us-east-2** (Ohio).
 > drifts. Where AWS has recently renamed things, both the old and new labels
 > are given. Source links are at the bottom of each section.
 
-### The seven things that actually went wrong on the dry run
+---
 
-Every one of these produced a symptom that pointed somewhere other than the
-cause. If you read nothing else, read these.
+## What you are building, and why
 
-| # | What happened | The tell |
-|---|---|---|
-| 1 | `webapp-rt` was created but the `0.0.0.0/0 → NAT` route was never added ([step 2](#2-internet-gateway-nat-gateway-route-tables)) | Targets sit **unhealthy** at step 12, ten steps later. Instances cannot reach `dnf`, Secrets Manager or SSM, so you cannot even log in to look |
-| 2 | The app database account was created with a different password from the one in Secrets Manager ([step 13](#13-load-the-database-schema)) | `"database": "unreachable"` — reads like a network or security group fault; the real cause is `[1045] Access denied` in `letsvote_error.log` |
-| 3 | The Auto Scaling group was pointed at the **public** subnets | Everything works, so nothing alerts you — but the instances have public IPs, bypass the NAT gateway you are paying for, and the private-tier design is gone |
-| 4 | Editing the Secrets Manager secret did nothing to running instances | `config.ini` is written **once**, at boot. A reboot does not re-read it; you must replace the instances |
-| 5 | Building in us-east-2 needs **two** ACM certificates ([step 8](#8-acm-certificate)) | The ALB's certificate dropdown is empty, or CloudFront refuses your certificate. Neither error mentions Regions |
-| 6 | The app client was missing the **`profile`** scope ([step 6c](#6c-set-the-callback-and-sign-out-urls)) | Cognito shows `Invalid request — Please check your input and try again` and names nothing. It rejects the authorize request if any single requested scope is not allowed |
-| 7 | The Cognito domain reached Secrets Manager with **three spaces inside it**, from a line-wrapped copy-paste ([step 6d](#6d-create-the-managed-login-domain)) | Sign-up goes to a domain that cannot resolve. The spaces are invisible in the console and appear as `%20` in the address bar |
+Read this before step 1. Every service below exists to solve one specific
+problem — if you know which problem, the console screens stop being arbitrary.
 
-The build was then torn down and repeated live with a class. Four **more**
-things went wrong the second time, none of them repeats of the first seven:
+### The shape of it
 
-| # | What happened | The tell |
-|---|---|---|
-| 8 | `APP_VERSION` named an artifact that was not in the bucket ([step 9](#9-launch-template)) | Boot dies with **`403 Forbidden`**, not 404 — see [the 403 trap](#the-403-that-is-really-a-404) — so it looks like an IAM problem and sends you to the wrong place |
-| 9 | The app client had **no OAuth configuration at all** — callbacks, scopes, flows and the OAuth toggle were all `null` ([step 6c](#6c-set-the-callback-and-sign-out-urls)) | Same `Invalid request` page as #6. The pool, the client secret and the domain were all correct, so everything *looked* built |
-| 10 | CloudFront's origin was left as the ALB's `*.elb.amazonaws.com` name instead of `origin.letsvotes.com` ([step 14](#14-cloudfront)) | **502 Bad Gateway** from CloudFront while the ALB itself serves fine. This is the exact failure [step 8](#8-acm-certificate) explains and it still happened |
-| 11 | Only `www` and `origin` records were created — **no apex `letsvotes.com`** ([step 15](#15-route-53)) | `www.letsvotes.com` works, the bare domain does not resolve, and sign-in breaks on the callback because the Cognito return URL is on the apex |
+```
+        the internet
+             │
+     ┌───────▼────────┐   WAF + Shield        step 17
+     │   CloudFront   │   TLS, edge, caching  step 14
+     └───────┬────────┘
+             │  origin.letsvotes.com  (a name you own, on your certificate)
+     ┌───────▼────────┐
+     │      ALB       │   public subnets, 2 AZs   steps 10–11
+     └───────┬────────┘
+             │  HTTP :80, only from the ALB's security group
+     ┌───────▼────────┐
+     │  EC2 × 2 (ASG) │   PRIVATE subnets, 2 AZs  steps 9, 12
+     └───┬────────┬───┘
+         │        │
+    ┌────▼──┐  ┌──▼───────────┐
+    │  RDS  │  │ Cognito, S3, │   database subnets: no internet at all
+    │ + rep │  │ Secrets Mgr  │   steps 4, 4b, 5, 6
+    └───────┘  └──────────────┘
+```
 
-**Eight of these eleven produced a symptom that pointed away from the cause.**
-That, more than the architecture, is what the exercise teaches.
+### Why each piece is there
 
-### Pre-flight, before you start with a class
+**Three subnet tiers (step 1).** Public, webapp, database. Each tier can reach
+the one below it and nothing can reach the database from outside. This is the
+entire security model — the rest is detail. Six subnets rather than three
+because everything is duplicated across two Availability Zones, so losing a
+whole data centre costs you capacity, not uptime.
 
-- [ ] **Budget alert** set (step 0) — the single most expensive mistake is leaving this running
-- [ ] **RDS sized `db.t4g.micro`, Single-AZ, 20 GiB.** The console defaults to a far larger instance; the dry run accidentally ran `db.m7g.large` Multi-AZ with a matching replica, roughly twenty times the intended cost
-- [ ] **Master credentials in Secrets Manager** (step 5) — decide before creating the replica, it cannot be enabled afterwards
-- [ ] **Artifact uploaded** to S3 and `APP_VERSION` matching it (steps 4b, 9)
-- [ ] **Database migrated before deploying new code** — `sql/` changes go first, or the app queries columns that do not exist while `/health.php` still reports healthy
-- [ ] **Step 16 done** — until it is, the ALB serves the public directly and every WAF rule in step 17 is decorative
+**NAT gateway (step 2).** The app instances have no public IP, so nothing on
+the internet can reach them. But they still need to reach *out* — to install
+packages, read Secrets Manager, and call Cognito's token endpoint. A NAT
+gateway gives outbound-only access: connections it starts are fine, connections
+started from outside are impossible. That asymmetry is the point, and it is why
+the database subnets do not get one at all.
+
+**Security groups referencing each other (step 3).** `letsvote-db-sg` allows
+3306 from `letsvote-webapp-sg` — not from an IP range. Instances come and go
+with autoscaling and their addresses change; the *group* is stable. Writing a
+CIDR would work today and quietly grant access to whatever else lands in that
+range later.
+
+**Secrets Manager (step 4).** The database password exists in exactly one
+place. It is not in the repository, not in the AMI, not in the launch template.
+Instances read it at boot using their IAM role, so there is no credential to
+leak and nothing to rotate by hand across a fleet.
+
+**S3 artifact + gateway endpoint (step 4b).** Instances install a specific,
+versioned zip rather than cloning a branch. Two instances launched an hour
+apart run identical code, and a rollback is changing a version number. The
+gateway endpoint keeps that traffic inside AWS — it never touches the internet.
+
+**RDS primary + read replica (step 5).** Writes go to the primary, tallies go
+to the replica. A class hammering the results page cannot slow down the box
+that is still accepting votes. `src/Db.php` decides per query, which is why
+the split is visible in the code rather than a deployment detail.
+
+**Cognito (step 6).** The application never sees a password. It redirects to
+Cognito, gets back a signed token, verifies the signature, and creates its own
+session. Passwords, MFA, verification emails and password resets are somebody
+else's problem — and a database breach cannot leak credentials the app never
+held.
+
+**IAM instance role (step 7).** The instances authenticate to AWS with no keys
+on disk. The role grants exactly two things: read one secret, read one S3
+prefix. If somebody gets a shell on an instance, that is the entire extent of
+what they inherit.
+
+**Two ACM certificates (step 8).** CloudFront only accepts certificates from
+us-east-1; an ALB only accepts them from its own Region. Building in us-east-2
+therefore needs one of each. The third name, `origin.letsvotes.com`, exists
+because CloudFront validates its origin's certificate against the hostname it
+dialled — and you cannot get a certificate for `*.elb.amazonaws.com`.
+
+**ALB + Auto Scaling (steps 10–12).** Two instances, one per AZ, behind a load
+balancer that health-checks them. Kill one and the group replaces it while the
+site stays up. Sessions live in MySQL rather than on disk precisely so any
+instance can serve any request.
+
+**CloudFront (step 14).** TLS termination at the edge, a stable public name,
+and a place to attach WAF. Caching is deliberately **disabled** — this is a
+dynamic, logged-in application, and caching HTML would serve one student's
+session to the whole class.
+
+**Locking the ALB to CloudFront (step 16).** An internet-facing ALB has a
+public DNS name, so without this step everything at the edge — WAF rules, rate
+limits, TLS policy — can be walked straight past. This is the step everyone
+skips, because the site works perfectly without it.
+
+**WAF (step 17).** Managed rule groups and rate limiting, attached at the edge
+where it is cheapest and furthest from your servers.
+
+### What this is not
+
+A real election system. There is no independent audit, no observer access, no
+legal framework, and the ballot secrecy here is a teaching demonstration rather
+than a guarantee that would survive scrutiny. The architecture is realistic;
+the trust model is not.
+
+---
+
+## Pre-flight checklist
+
+Work through this before a class. Every item is something that went wrong on a
+previous run.
+
+- [ ] **Budget alert set** ([step 0](#0-before-you-start)). Leaving this build
+      running is the single most expensive mistake available to you.
+- [ ] **RDS sized `db.t4g.micro`, Single-AZ, 20 GiB.** The console defaults to
+      something far larger. One run accidentally used `db.m7g.large` Multi-AZ
+      with a matching replica — roughly **twenty times** the intended cost.
+- [ ] **Master credentials in Secrets Manager** ([step 5](#5-rds-primary--read-replica)).
+      Decide before creating the replica; AWS will not let you enable it
+      afterwards.
+- [ ] **Artifact built and uploaded**, and `APP_VERSION` matching the filename
+      exactly ([4b](#4b-s3-artifact-bucket-and-gateway-endpoint),
+      [9](#9-launch-template)). A mismatch fails the boot with a misleading
+      `403`.
+- [ ] **Database migrated before new code is deployed.** `sql/` changes go
+      first, or the app queries columns that do not exist while `/health.php`
+      still reports healthy.
+- [ ] **Cognito app client checked**, not assumed ([6c](#6c-set-the-callback-and-sign-out-urls)).
+      Callbacks, sign-out URL, `code` flow, `openid email profile`, OAuth
+      toggle on — all five.
+- [ ] **All three DNS records**, including the **apex** ([15](#15-route-53)).
+- [ ] **CloudFront origin is `origin.letsvotes.com`**, not the ALB's own name
+      ([14](#14-cloudfront)).
+- [ ] **Step 16 done** ([16](#16-lock-the-alb-to-cloudfront)). Until it is, the
+      ALB serves the public directly and every WAF rule is decorative.
+- [ ] **Teardown scheduled.** Know when you are deleting this, and read
+      [step 18](#18-teardown-in-this-order) before you need it.
 
 > ### Step 16 has never actually been done
-> Both runs of this build — the solo dry run and the live class — reached the
-> end with `origin.letsvotes.com` still answering the public. It is the one
-> step that gets skipped, because everything works without it and nothing
-> complains.
+> Both runs of this build — the solo rehearsal and the live class — reached the
+> end with `origin.letsvotes.com` still answering the public. It gets skipped
+> because everything works without it and nothing complains.
 >
-> Budget five minutes for it in the next build, and use the before/after as a
-> demonstration rather than an aside:
+> Budget five minutes, and use the before/after as a demonstration rather than
+> an aside:
 >
 > ```bash
 > curl -s -o /dev/null -w '%{http_code}\n' https://origin.letsvotes.com/   # 200 before, 403 after
@@ -82,10 +185,42 @@ That, more than the architecture, is what the exercise teaches.
 
 ---
 
+## Known failures from previous runs
+
+This build has been completed twice — once as a rehearsal, once live with a
+class. Eleven things went wrong. **Eight of them produced a symptom that
+pointed somewhere other than the cause**, which is the most useful thing in
+this document.
+
+Skim it now; come back to it when something breaks.
+
+| # | What happened | The tell |
+|---|---|---|
+| 1 | `webapp-rt` was created but the `0.0.0.0/0 → NAT` route was never added ([step 2](#2-internet-gateway-nat-gateway-route-tables)) | Targets sit **unhealthy** at step 12, ten steps later. Instances cannot reach `dnf`, Secrets Manager or SSM, so you cannot even log in to look |
+| 2 | The app database account was created with a different password from the one in Secrets Manager ([step 13](#13-load-the-database-schema)) | `"database": "unreachable"` — reads like a network or security group fault; the real cause is `[1045] Access denied` in `letsvote_error.log` |
+| 3 | The Auto Scaling group was pointed at the **public** subnets ([step 12](#12-auto-scaling-group)) | Everything works, so nothing alerts you — but the instances have public IPs, bypass the NAT gateway you are paying for, and the private-tier design is gone |
+| 4 | Editing the Secrets Manager secret did nothing to running instances | `config.ini` is written **once**, at boot. A reboot does not re-read it; you must replace the instances |
+| 5 | Building in us-east-2 needs **two** ACM certificates ([step 8](#8-acm-certificate)) | The ALB's certificate dropdown is empty, or CloudFront refuses your certificate. Neither error mentions Regions |
+| 6 | The app client was missing the **`profile`** scope ([step 6c](#6c-set-the-callback-and-sign-out-urls)) | Cognito shows `Invalid request — Please check your input and try again` and names nothing. It rejects the authorize request if any single requested scope is not allowed |
+| 7 | The Cognito domain reached Secrets Manager with **three spaces inside it**, from a line-wrapped copy-paste ([step 6d](#6d-create-the-managed-login-domain)) | Sign-up goes to a domain that cannot resolve. The spaces are invisible in the console and appear as `%20` in the address bar |
+| 8 | `APP_VERSION` named an artifact that was not in the bucket ([step 9](#9-launch-template)) | Boot dies with **`403 Forbidden`**, not 404 — see [the 403 trap](#the-403-that-is-really-a-404) — so it looks like an IAM problem and sends you to the wrong place |
+| 9 | The app client had **no OAuth configuration at all** — callbacks, scopes, flows and the OAuth toggle were all `null` ([step 6c](#6c-set-the-callback-and-sign-out-urls)) | Same `Invalid request` page as #6. The pool, the client secret and the domain were all correct, so everything *looked* built |
+| 10 | CloudFront's origin was left as the ALB's `*.elb.amazonaws.com` name instead of `origin.letsvotes.com` ([step 14](#14-cloudfront)) | **502 Bad Gateway** from CloudFront while the ALB itself serves fine. This is the exact failure [step 8](#8-acm-certificate) explains, and it still happened |
+| 11 | Only `www` and `origin` records were created — **no apex** ([step 15](#15-route-53)) | `www` works, the bare domain does not resolve, and sign-in breaks on the callback because the Cognito return URL is on the apex |
+
+
 ## Contents
 
 Roughly **2 to 2½ hours** end to end. Most of that is clicking; the waits are
 marked ⏳ and are worth planning teaching around rather than watching.
+
+Before the steps, three sections worth reading first:
+
+| Section | What it is for |
+|---|---|
+| [What you are building, and why](#what-you-are-building-and-why) | The architecture and the reason each service is in it. Read before step 1 |
+| [Pre-flight checklist](#pre-flight-checklist) | Ten things to confirm before a class. Every one has gone wrong before |
+| [Known failures from previous runs](#known-failures-from-previous-runs) | The eleven things that broke, and what each one looked like |
 
 | # | Step | Depends on | Time |
 |---|---|---|---|
@@ -163,6 +298,10 @@ what produces surprise bills.
 
 ## 1. VPC and subnets
 
+**Why:** a private network of your own, split into three tiers. Everything
+later depends on which tier a resource sits in, so this step decides the
+security model.
+
 VPC → *Create VPC* → **VPC only** (create each piece by hand so the class sees
 all of them).
 
@@ -192,6 +331,10 @@ For both **public** subnets only: *Actions* → *Edit subnet settings* → tick
 > `public-subnet-01` and `public-subnet-02` say Yes.
 
 ## 2. Internet gateway, NAT gateway, route tables
+
+**Why:** routing decides who can talk to the internet. Public subnets get a
+two-way door (the internet gateway); webapp subnets get an outbound-only door
+(the NAT gateway); database subnets get no door at all.
 
 1. VPC → *Internet gateways* → create `letsvote-igw` → **Attach to VPC**.
 2. VPC → *Elastic IPs* → *Allocate*, name it `letsvote-nat-eip`.
@@ -229,6 +372,10 @@ The `local` route for `172.16.0.0/16` is automatic; don't delete it.
 That is the point of a separate data tier.
 
 ## 3. Security groups
+
+**Why:** these are the firewalls between tiers. Written as references to each
+other rather than IP ranges, they keep working as autoscaling replaces
+instances and their addresses change.
 
 VPC → *Security groups*. Create all three empty first, then add rules — they
 reference each other.
@@ -273,6 +420,9 @@ instance directly to forge it.
 > other, not from an address range that happens to match.
 
 ## 4. Secrets Manager
+
+**Why:** so the database password lives in exactly one place, and no
+credential is ever committed to the repository or baked into an image.
 
 Secrets Manager, **in us-east-2** — a secret is a regional resource, and
 `deploy/userdata.sh` reads it with `--region us-east-2`. One created in another
@@ -363,6 +513,9 @@ this is a concrete demonstration that architecture choices show up on the bill.
 
 ## 5. RDS primary + read replica
 
+**Why:** two databases so that reading results cannot slow down the database
+still accepting votes. The application chooses per query — see `src/Db.php`.
+
 1. RDS → *Subnet groups* → *Create*: `letsvote-subnet-group`, VPC
    `letsvote-vpc`, AZs `us-east-2a` + `us-east-2b`, subnets
    `database-subnet-01` and `database-subnet-02`.
@@ -436,6 +589,9 @@ exactly why `Db::read()` is used only for tallies.
 *Docs: [Creating a read replica](https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/USER_ReadRepl.Create.html)*
 
 ## 6. Cognito user pool
+
+**Why:** so the application never handles a password. Cognito owns sign-up,
+sign-in, verification emails and resets; the app only verifies a signed token.
 
 Console (note the Region in the URL):
 <https://us-east-2.console.aws.amazon.com/cognito/v2/idp/user-pools?region=us-east-2>
@@ -866,6 +1022,9 @@ code sends, and `code_verifier` is accepted alongside a client secret.
 
 ## 7. IAM role for the instances
 
+**Why:** so instances authenticate to AWS with no keys stored on disk, and
+can reach exactly two things — one secret and one S3 prefix — and nothing else.
+
 IAM → *Roles* → *Create role* → **AWS service** → **EC2**.
 
 Attach the managed policy **`AmazonSSMManagedInstanceCore`** — this is what
@@ -928,6 +1087,10 @@ Role name: `letsvote-ec2-role`.
 
 ## 8. ACM certificate
 
+**Why:** TLS for the public site and for the hop between CloudFront and the
+ALB. Two certificates, because CloudFront and the ALB accept them from
+different Regions.
+
 **You need two certificates, in two different Regions.** An ALB can only use a
 certificate from its own Region, and CloudFront only accepts certificates from
 us-east-1. Because this build runs in us-east-2, no single certificate can
@@ -968,6 +1131,9 @@ was never created — go back and click the button.
 > name that is routed to your Application Load Balancer."
 
 ## 9. Launch template
+
+**Why:** the recipe for an instance. The Auto Scaling group uses it to build
+every replacement identically, which is what makes instances disposable.
 
 EC2 → *Launch templates* → *Create*.
 
@@ -1080,6 +1246,10 @@ immediately instead of as random 500s.
 
 ## 10. Target group
 
+**Why:** the health-check definition. It is how the load balancer decides an
+instance is fit to receive traffic, and how the Auto Scaling group knows to
+replace one that is not.
+
 EC2 → *Target groups* → *Create*.
 
 - Target type **Instances**, protocol **HTTP** port **80**, VPC `letsvote-vpc`
@@ -1090,6 +1260,9 @@ EC2 → *Target groups* → *Create*.
 - **Register no targets by hand** — the Auto Scaling group does it
 
 ## 11. Application Load Balancer
+
+**Why:** one public entry point spreading traffic across both Availability
+Zones, so a failed instance or a failed data centre is invisible to users.
 
 EC2 → *Load balancers* → *Create load balancer* → under **Application Load
 Balancer**, *Create*.
@@ -1121,6 +1294,9 @@ Copy the ALB DNS name.
 > **us-east-2**; the us-east-1 one is for CloudFront and will never appear here.
 
 ## 12. Auto Scaling group
+
+**Why:** this is what makes the system self-healing. It keeps two healthy
+instances alive across two AZs and rebuilds any that fail their health check.
 
 EC2 → *Auto Scaling groups* → *Create an Auto Scaling group*.
 
@@ -1178,6 +1354,10 @@ don't, jump to [troubleshooting](#19-when-it-does-not-work).
 > route.
 
 ## 13. Load the database schema
+
+**Why:** the tables do not exist yet. This is also where the application's
+limited database account is created — deliberately without permission to
+change the schema.
 
 The instances are private, so use Session Manager rather than SSH:
 EC2 → *Instances* → select one → *Connect* → **Session Manager** → *Connect*.
@@ -1260,6 +1440,9 @@ UPDATE users SET is_admin = 1 WHERE email = 'you@example.com';
 
 ## 14. CloudFront
 
+**Why:** TLS and a stable public name at the edge, and somewhere to attach
+WAF. Caching is switched off on purpose: this is a logged-in, dynamic app.
+
 Console: <https://console.aws.amazon.com/cloudfront/v4/home> → *Create
 distribution*.
 
@@ -1329,6 +1512,9 @@ that hole and is not optional.**
 [Create a distribution](https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/distribution-web-creating-console.html)*
 
 ## 15. Route 53
+
+**Why:** to point your domain at CloudFront, and to give the ALB its own name
+so CloudFront's certificate check succeeds.
 
 Route 53 → *Hosted zones* → your domain → *Create record*, three times:
 
@@ -1406,6 +1592,9 @@ with `CachingDisabled` there should never be a `Hit`.
 
 ## 16. Lock the ALB to CloudFront
 
+**Why:** without this, anyone can skip CloudFront and hit the ALB directly,
+which makes every protection in step 17 optional for an attacker.
+
 **Do not skip this.** An internet-facing ALB has a publicly resolvable DNS
 name, so at this point anyone can hit `origin.letsvotes.com` directly and
 walk straight past CloudFront *and* the WAF rules you add in step 17. Rate
@@ -1455,6 +1644,9 @@ Test: `https://letsvotes.com` works; `https://origin.letsvotes.com`
 returns `403 Access denied`.
 
 ## 17. WAF
+
+**Why:** managed rule groups and rate limiting, applied at the edge where it
+is cheapest and furthest from your servers.
 
 > **AWS is rolling out a new WAF console** where a web ACL is called a
 > **"protection pack"**. You may land in either one.
